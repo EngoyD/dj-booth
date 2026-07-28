@@ -11,7 +11,7 @@
          -> paste the Client ID into the Connect prompt (or CONFIG.SPOTIFY_CLIENT_ID).
   Audio: click a wall speaker (or press A) and pick BlackHole 2ch from the in-game menu.
   Connect: click the screen when the DJ has the "!" bubble; song + artist then live in the dialog box.
-  Keys:  S force swap · R force scratch · D debug · A audio menu · arrows/enter in menus
+  Keys:  S force swap · R force scratch · D debug · A audio menu · F fullscreen · arrows/enter in menus
 -->
 <html lang="en">
 <head>
@@ -313,6 +313,26 @@ function resize() {
 }
 addEventListener('resize', resize);
 resize();
+
+/* ============================== FULLSCREEN ============================== */
+function fsElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
+function toggleFullscreen() {
+  const el = document.documentElement;
+  try {
+    if (fsElement()) {
+      const exit = document.exitFullscreen || document.webkitExitFullscreen;
+      if (exit) Promise.resolve(exit.call(document)).catch(() => {});
+    } else {
+      const req = el.requestFullscreen || el.webkitRequestFullscreen;
+      if (!req) { setMsg('Fullscreen not supported here.'); return; }
+      Promise.resolve(req.call(el)).catch(e => setMsg('Fullscreen blocked: ' + (e.message || e)));
+    }
+  } catch (e) { setMsg('Fullscreen failed: ' + (e.message || e)); }
+}
+// innerWidth/innerHeight can lag the change event; re-run on the next frame too
+const onFsChange = () => { resize(); requestAnimationFrame(resize); };
+document.addEventListener('fullscreenchange', onFsChange);
+document.addEventListener('webkitfullscreenchange', onFsChange);
 
 /* ============================== SPOTIFY AUTH (PKCE) ============================== */
 function getClientId() { return (CONFIG.SPOTIFY_CLIENT_ID || ls.get('djb.cid') || '').trim(); }
@@ -1830,6 +1850,7 @@ cv.addEventListener('click', e => {
 addEventListener('keydown', e => {
   if (e.target && /^(INPUT|SELECT|TEXTAREA|BUTTON)$/.test(e.target.tagName)) return;
   const k = e.key.toLowerCase();
+  if (k === 'f') { toggleFullscreen(); e.preventDefault(); return; }
   if (ui.menuOpen) {
     if (k === 'arrowup') ui.menuIdx = (ui.menuIdx + ui.devices.length) % (ui.devices.length + 1);
     else if (k === 'arrowdown') ui.menuIdx = (ui.menuIdx + 1) % (ui.devices.length + 1);
