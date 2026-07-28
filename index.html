@@ -1655,11 +1655,11 @@ function drawDialog(qT, dtS) {
       tsx += gw(tEl) + SEP;
       drawText(tsx, D.y + 21, '/', GB2);
       drawText(tsx + 3 + SEP, D.y + 21, tTot, GB2);
-      p.fillStyle = GB1; p.fillRect(D.x + 8, D.y + 26, 110, 2);
+      p.fillStyle = GB1; p.fillRect(D.x + 8, D.y + 28, 110, 2);   // 2px clear of the timer above
       const w = Math.round(clamp01(cur / playback.durationMs) * 110);
       const al = artState.latest;
       p.fillStyle = al ? al.acc : AC();
-      p.fillRect(D.x + 8, D.y + 26, w, 2);
+      p.fillRect(D.x + 8, D.y + 28, w, 2);
     }
   }
 }
