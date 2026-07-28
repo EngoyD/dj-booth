@@ -64,7 +64,7 @@ const CONFIG = {
   POLL_MS_IDLE: 10000,
 
   PLATTER_RPM: 100 / 3,                  // 33 1/3
-  SWAP_MS: 1800,
+  SWAP_MS: 2600,                        // longer: the DJ now walks to the deck and back
   SCRATCH_MS: 600,
   SCRATCH_RANDOM_MIN_S: 20,
   SCRATCH_RANDOM_MAX_S: 60,
@@ -937,6 +937,16 @@ function swapTarget(t) {
   ];
   return pathLerp(K, clamp01(t));
 }
+function swapBodyX(t) {                  // DJ walks to the deck, works, walks back
+  const home = L.dj.x, at = L.deck[dj.swapDeck].x - 8;   // centre the 16px sprite on the platter
+  const K = [
+    [0.00, { x: home, y: 0 }],
+    [0.20, { x: at, y: 0 }],
+    [0.72, { x: at, y: 0 }],
+    [1.00, { x: home, y: 0 }],
+  ];
+  return pathLerp(K, clamp01(t)).x;
+}
 function scratchTarget(t) {
   const P = L.deck[dj.scratchDeck];
   const toward = dj.scratchDeck === 0 ? 4 : -4;
@@ -1338,12 +1348,16 @@ function drawRecordSprite(x, y, img, hidden) {
   }
 }
 function drawDJ(qT) {
-  let lean = 0;
   const acting = dj.state === 'swap' || dj.state === 'scratch';
   const deck = dj.state === 'swap' ? dj.swapDeck : dj.scratchDeck;
-  if (acting) lean = Math.round(Math.sin(Math.min(1, dj.t) * Math.PI) * 4) * (deck === 0 ? -1 : 1);
-  const x = L.dj.x + lean;
-  drawPerson(x, L.dj.y, 0, { cap: true, phones: true, shirt: GB2 });
+  let x = L.dj.x, bob = 0;
+  if (dj.state === 'swap') {
+    x = Math.round(swapBodyX(dj.t));
+    if (dj.t < 0.20 || dj.t > 0.72) bob = Math.floor(qT * CONFIG.ANIM_FPS) % 2;   // step bob while walking
+  } else if (dj.state === 'scratch') {
+    x += Math.round(Math.sin(Math.min(1, dj.t) * Math.PI) * 4) * (deck === 0 ? -1 : 1);
+  }
+  drawPerson(x, L.dj.y, bob, { cap: true, phones: true, shirt: GB2 });
   if (acting) {
     const tp = dj.state === 'swap' ? swapTarget(dj.t) : scratchTarget(dj.t);
     const sh = { x: x + (deck === 0 ? 4 : 12), y: L.dj.y + 11 };
