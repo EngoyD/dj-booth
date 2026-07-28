@@ -1646,9 +1646,15 @@ function drawDialog(qT, dtS) {
     if (playback.durationMs > 0) {
       const cur = clamp(estProgress(), 0, playback.durationMs);
       const fmt = ms => { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
-      const tstr = txt(fmt(cur) + '/' + fmt(playback.durationMs), 11);
-      const tsw = tstr.length * 4 - 1;                         // 4px advance, last glyph is 3 wide
-      drawText(D.x + D.w - 5 - tsw, D.y + 21, tstr, GB2);      // right-aligned, 2px clear of the inner border
+      const tEl = txt(fmt(cur), 6), tTot = txt(fmt(playback.durationMs), 6);
+      const gw = t => t.length * 4 - 1;                        // 4px advance, last glyph is 3 wide
+      const SEP = 3;                                           // slash needs more than the font's 1px gap
+      const tsw = gw(tEl) + SEP + 3 + SEP + gw(tTot);
+      let tsx = D.x + D.w - 5 - tsw;                           // right-aligned, 2px clear of the inner border
+      drawText(tsx, D.y + 21, tEl, GB2);
+      tsx += gw(tEl) + SEP;
+      drawText(tsx, D.y + 21, '/', GB2);
+      drawText(tsx + 3 + SEP, D.y + 21, tTot, GB2);
       p.fillStyle = GB1; p.fillRect(D.x + 8, D.y + 26, 110, 2);
       const w = Math.round(clamp01(cur / playback.durationMs) * 110);
       const al = artState.latest;
