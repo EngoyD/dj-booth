@@ -838,7 +838,7 @@ const L = {
   platterR: 7, labelR: 3,
   mixer: { x: 74, y: 47, w: 12, h: 13 },
   booth: { x: 40, y: 46, w: 80, h: 28, topH: 16 },
-  dj: { x: 80, y: 30 },
+  dj: { x: 72, y: 30 },                 // sprite centre (72+8=80) sits on the mixer, equidistant from both decks
   board: { x: 60, y: 0, art: { x: 61, y: 1 } },        // framed album art on the wall behind the DJ
   speakers: [{ x: 42, y: 3 }, { x: 102, y: 3 }],
   cafe: { x: 122, y: 44, w: 36, h: 22, topH: 14 },   // horizontal bar counter
@@ -937,15 +937,17 @@ function swapTarget(t) {
   ];
   return pathLerp(K, clamp01(t));
 }
-function swapBodyX(t) {                  // DJ walks to the deck, works, walks back
+function swapBody(t) {                   // walk to the deck, lean over the counter, walk back
   const home = L.dj.x, at = L.deck[dj.swapDeck].x - 8;   // centre the 16px sprite on the platter
   const K = [
     [0.00, { x: home, y: 0 }],
     [0.20, { x: at, y: 0 }],
-    [0.72, { x: at, y: 0 }],
+    [0.30, { x: at, y: 3 }],                             // lean in: he is drawn over the deck
+    [0.68, { x: at, y: 3 }],
+    [0.78, { x: at, y: 0 }],
     [1.00, { x: home, y: 0 }],
   ];
-  return pathLerp(K, clamp01(t)).x;
+  return pathLerp(K, clamp01(t));
 }
 function scratchTarget(t) {
   const P = L.deck[dj.scratchDeck];
@@ -1350,17 +1352,20 @@ function drawRecordSprite(x, y, img, hidden) {
 function drawDJ(qT) {
   const acting = dj.state === 'swap' || dj.state === 'scratch';
   const deck = dj.state === 'swap' ? dj.swapDeck : dj.scratchDeck;
-  let x = L.dj.x, bob = 0;
+  let x = L.dj.x, y = L.dj.y, bob = 0, dir = 0;
   if (dj.state === 'swap') {
-    x = Math.round(swapBodyX(dj.t));
-    if (dj.t < 0.20 || dj.t > 0.72) bob = Math.floor(qT * CONFIG.ANIM_FPS) % 2;   // step bob while walking
+    const b = swapBody(dj.t);
+    x = Math.round(b.x); y = L.dj.y + Math.round(b.y);
+    if (dj.t < 0.20 || dj.t > 0.78) bob = Math.floor(qT * CONFIG.ANIM_FPS) % 2;   // step bob while walking
+    else dir = deck === 0 ? 2 : 3;                                                // turn to face the deck
   } else if (dj.state === 'scratch') {
     x += Math.round(Math.sin(Math.min(1, dj.t) * Math.PI) * 4) * (deck === 0 ? -1 : 1);
+    dir = deck === 0 ? 2 : 3;
   }
-  drawPerson(x, L.dj.y, bob, { cap: true, phones: true, shirt: GB2 });
+  drawPerson(x, y, bob, { cap: true, phones: true, shirt: GB2, dir });
   if (acting) {
     const tp = dj.state === 'swap' ? swapTarget(dj.t) : scratchTarget(dj.t);
-    const sh = { x: x + (deck === 0 ? 4 : 12), y: L.dj.y + 11 };
+    const sh = { x: x + (deck === 0 ? 4 : 12), y: y + 11 };
     let dx = tp.x - sh.x, dy = tp.y - sh.y;
     const d = Math.hypot(dx, dy) || 1;
     const m = Math.min(d, 9) / d;
