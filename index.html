@@ -101,6 +101,34 @@ const PW = 160, PH = 144;                // true Game Boy screen
 // 4-shade warm sepia ramp matching the lounge reference; the whole scene uses only these.
 const GB0 = '#f8f0d8', GB1 = '#c8b078', GB2 = '#786048', GB3 = '#181410';
 const RAMP4 = [[248, 240, 216], [200, 176, 120], [120, 96, 72], [24, 20, 16]];
+// Super Game Boy style: the room is drawn once on the 4-shade ramp, then each
+// region is remapped to its own 4 colours. Sprites keep the warm base ramp.
+const PAL = {
+  wall:  [[232, 232, 248], [160, 168, 216], [ 88, 104, 160], [ 24,  24,  40]],
+  booth: [[240, 224, 248], [176, 144, 192], [112,  80, 128], [ 32,  24,  40]],
+  cafe:  [[248, 224, 208], [208, 152, 120], [144,  72,  56], [ 40,  16,   8]],
+  couch: [[224, 240, 216], [160, 200, 136], [ 80, 120,  72], [ 24,  32,   8]],
+};
+function rampIndex(r, g, b) {
+  for (let i = 0; i < 4; i++) {
+    const c = RAMP4[i];
+    if (c[0] === r && c[1] === g && c[2] === b) return i;
+  }
+  return -1;
+}
+function tintRegion(c, x, y, w, h, ramp) {
+  x = Math.max(0, x); y = Math.max(0, y);
+  w = Math.min(w, PW - x); h = Math.min(h, PH - y);
+  if (w <= 0 || h <= 0) return;
+  try {
+    const id = c.getImageData(x, y, w, h), d = id.data;
+    for (let i = 0; i < d.length; i += 4) {
+      const k = rampIndex(d[i], d[i + 1], d[i + 2]);
+      if (k >= 0) { d[i] = ramp[k][0]; d[i + 1] = ramp[k][1]; d[i + 2] = ramp[k][2]; }
+    }
+    c.putImageData(id, x, y);
+  } catch (e) {}
+}
 // Richer GB-flavored palette used only to quantize album art (SGB-style colorized surface).
 const ART_COLS = [
   [248, 248, 240], [240, 224, 176], [216, 176, 112], [160, 104, 56], [104, 64, 32],
@@ -838,15 +866,14 @@ const L = {
   platterR: 7, labelR: 3,
   mixer: { x: 74, y: 47, w: 12, h: 13 },
   booth: { x: 40, y: 46, w: 80, h: 28, topH: 16 },
-  dj: { x: 72, y: 30 },                 // sprite centre (72+8=80) sits on the mixer, equidistant from both decks
+  dj: { x: 72, y: 26 },                 // centred on the mixer; feet clear the counter top by 2px
   board: { x: 60, y: 0, art: { x: 61, y: 1 } },        // framed album art on the wall behind the DJ
   speakers: [{ x: 42, y: 3 }, { x: 102, y: 3 }],
-  cafe: { x: 122, y: 44, w: 36, h: 22, topH: 14 },   // horizontal bar counter
-  barista: { x: 132, y: 27 },
-  pcase: { x: 122, y: 66 },
-  couch: { x: 2, y: 70 },
-  table: { x: 58, y: 92 },
-  sitter: { x: 11, y: 68 },
+  cafe: { x: 124, y: 30, w: 36, h: 22, topH: 14 },     // tight against the back wall
+  barista: { x: 136, y: 20 },           // only head + face clear the counter
+  couch: { x: 2, y: 26 },               // top-left, facing the viewer
+  sitter: { x: 8, y: 22 },
+  tables: [{ x: 26, y: 92 }, { x: 136, y: 94 }],       // two small tables, patrons sit at them
   dialog: { x: 2, y: 108, w: 156, h: 34 },
 };
 const decks = { active: 0, d: [{ angle: 0, labelImg: null }, { angle: rand(0, TAU), labelImg: null }] };
@@ -942,8 +969,8 @@ function swapBody(t) {                   // walk to the deck, lean over the coun
   const K = [
     [0.00, { x: home, y: 0 }],
     [0.20, { x: at, y: 0 }],
-    [0.30, { x: at, y: 3 }],                             // lean in: he is drawn over the deck
-    [0.68, { x: at, y: 3 }],
+    [0.30, { x: at, y: 1 }],                             // 1px settle only: more reads as standing on the deck
+    [0.68, { x: at, y: 1 }],
     [0.78, { x: at, y: 0 }],
     [1.00, { x: home, y: 0 }],
   ];
@@ -1177,66 +1204,56 @@ function buildRoom() {
   // coffee bar: clerk-style counter, barista stands behind it (drawn dynamically)
   counterBlock(c, L.cafe.x, L.cafe.y, L.cafe.w, L.cafe.h, L.cafe.topH);
   // espresso machine on the bar
-  c.fillStyle = GB3; c.fillRect(126, 46, 12, 10);
-  c.fillStyle = GB2; c.fillRect(127, 47, 10, 8);
-  c.fillStyle = GB0; c.fillRect(127, 47, 10, 2);
-  c.fillStyle = GB3; c.fillRect(131, 51, 2, 2); c.fillRect(129, 50, 1, 1); c.fillRect(134, 50, 1, 1);
-  c.fillStyle = GB0; c.fillRect(129, 54, 6, 1);
+  const CY = L.cafe.y;
+  c.fillStyle = GB3; c.fillRect(126, CY + 4, 12, 10);
+  c.fillStyle = GB2; c.fillRect(127, CY + 5, 10, 8);
+  c.fillStyle = GB0; c.fillRect(127, CY + 5, 10, 2);
+  c.fillStyle = GB3; c.fillRect(131, CY + 9, 2, 2); c.fillRect(129, CY + 8, 1, 1); c.fillRect(134, CY + 8, 1, 1);
+  c.fillStyle = GB0; c.fillRect(129, CY + 12, 6, 1);
   // two served cups + a stack
   for (const cx of [140, 146]) {
-    c.fillStyle = GB3; c.fillRect(cx, 48, 4, 4);
-    c.fillStyle = GB0; c.fillRect(cx + 1, 49, 2, 2);
-    c.fillStyle = GB3; c.fillRect(cx + 4, 49, 1, 2);
+    c.fillStyle = GB3; c.fillRect(cx, CY + 6, 4, 4);
+    c.fillStyle = GB0; c.fillRect(cx + 1, CY + 7, 2, 2);
+    c.fillStyle = GB3; c.fillRect(cx + 4, CY + 7, 1, 2);
   }
-  c.fillStyle = GB3; c.fillRect(151, 46, 5, 9);
-  c.fillStyle = GB0; c.fillRect(152, 47, 3, 2); c.fillRect(152, 50, 3, 2);
-  c.fillStyle = GB1; c.fillRect(152, 49, 3, 1); c.fillRect(152, 52, 3, 2);
-  // standalone pastry display case along the right wall
-  const PC = L.pcase;
-  c.fillStyle = GB3; c.fillRect(PC.x, PC.y, 20, 13);
-  c.fillStyle = GB0; c.fillRect(PC.x + 1, PC.y + 1, 18, 11);
-  c.fillStyle = GB1; c.fillRect(PC.x + 2, PC.y + 2, 3, 1); c.fillRect(PC.x + 1, PC.y + 3, 2, 1);
-  c.fillStyle = GB3; c.fillRect(PC.x + 1, PC.y + 6, 18, 1);
-  c.fillStyle = GB1; c.fillRect(PC.x + 3, PC.y + 7, 5, 3); c.fillRect(PC.x + 11, PC.y + 7, 5, 3);
-  c.fillStyle = GB2; c.fillRect(PC.x + 4, PC.y + 8, 2, 1); c.fillRect(PC.x + 12, PC.y + 8, 2, 1);
-  c.fillStyle = GB3; c.fillRect(PC.x + 3, PC.y + 10, 5, 1); c.fillRect(PC.x + 11, PC.y + 10, 5, 1);
-  c.fillStyle = GB2; c.fillRect(PC.x + 1, PC.y + 11, 18, 1);
-  shadowDither(c, PC.x + 2, PC.y + 13, 16);
-  // couch: backrest left, armrests top + bottom, two cushions, skirt (sitter drawn dynamically)
-  const C = L.couch;
-  c.fillStyle = GB3; c.fillRect(C.x, C.y, 30, 32);
-  c.fillStyle = GB2; c.fillRect(C.x + 1, C.y + 1, 7, 30);                 // backrest
-  c.fillStyle = GB1; c.fillRect(C.x + 2, C.y + 2, 3, 28);
-  c.fillStyle = GB2; c.fillRect(C.x + 8, C.y + 1, 21, 6);                 // top armrest
-  c.fillStyle = GB1; c.fillRect(C.x + 8, C.y + 1, 21, 2);
-  c.fillStyle = GB3; c.fillRect(C.x + 8, C.y + 7, 21, 1);
-  c.fillStyle = GB2; c.fillRect(C.x + 8, C.y + 25, 21, 6);                // bottom armrest
-  c.fillStyle = GB1; c.fillRect(C.x + 8, C.y + 25, 21, 2);
-  c.fillStyle = GB3; c.fillRect(C.x + 8, C.y + 24, 21, 1);
-  c.fillStyle = GB1; c.fillRect(C.x + 8, C.y + 8, 18, 16);                // two seat cushions
-  c.fillStyle = GB3; c.fillRect(C.x + 8, C.y + 16, 18, 1);
-  c.fillStyle = GB2; c.fillRect(C.x + 8, C.y + 14, 18, 2); c.fillRect(C.x + 8, C.y + 22, 18, 2);
-  c.fillStyle = GB2; c.fillRect(C.x + 26, C.y + 8, 3, 16);                // right seat edge
-  c.fillStyle = GB3; c.fillRect(C.x + 29, C.y + 3, 1, 4); c.fillRect(C.x + 29, C.y + 25, 1, 4); // feet
-  shadowDither(c, C.x + 2, C.y + 32, 27);
-  // round cafe table + stools + a coffee on it
-  const T = L.table;
-  fillCircOn(c, T.x, T.y + 1, 8, GB2);                          // table shadow ring
-  fillCircOn(c, T.x, T.y, 8, GB3);
-  fillCircOn(c, T.x, T.y + 1, 7, GB1);
-  fillCircOn(c, T.x, T.y, 7, GB0);
-  fillCircOn(c, T.x, T.y - 1, 6, GB0);
-  c.fillStyle = GB3; c.fillRect(T.x - 3, T.y - 4, 4, 4);
-  c.fillStyle = GB0; c.fillRect(T.x - 2, T.y - 3, 2, 2);
-  c.fillStyle = GB3; c.fillRect(T.x + 1, T.y - 3, 1, 2);
-  for (const sx of [42, 74]) {
-    fillCircOn(c, sx, 95, 4, GB2);
-    fillCircOn(c, sx, 94, 4, GB3);
-    fillCircOn(c, sx, 94, 3, GB1);
-    c.fillStyle = GB0; c.fillRect(sx - 1, 92, 2, 2);
+  c.fillStyle = GB3; c.fillRect(151, CY + 4, 5, 9);
+  c.fillStyle = GB0; c.fillRect(152, CY + 5, 3, 2); c.fillRect(152, CY + 8, 3, 2);
+  c.fillStyle = GB1; c.fillRect(152, CY + 7, 3, 1); c.fillRect(152, CY + 10, 3, 2);
+  // couch facing the viewer: backrest along the top, armrests at each end
+  const C = L.couch;                                                     // 38 x 18
+  c.fillStyle = GB3; c.fillRect(C.x, C.y, 38, 18);
+  c.fillStyle = GB2; c.fillRect(C.x + 1, C.y + 1, 36, 6);                // backrest
+  c.fillStyle = GB1; c.fillRect(C.x + 2, C.y + 2, 34, 3);
+  c.fillStyle = GB3; c.fillRect(C.x + 1, C.y + 7, 36, 1);
+  c.fillStyle = GB2; c.fillRect(C.x + 1, C.y + 8, 6, 9);                 // left armrest
+  c.fillStyle = GB1; c.fillRect(C.x + 1, C.y + 8, 2, 9);
+  c.fillStyle = GB2; c.fillRect(C.x + 31, C.y + 8, 6, 9);                // right armrest
+  c.fillStyle = GB1; c.fillRect(C.x + 31, C.y + 8, 2, 9);
+  c.fillStyle = GB1; c.fillRect(C.x + 7, C.y + 8, 24, 9);                // two seat cushions
+  c.fillStyle = GB3; c.fillRect(C.x + 19, C.y + 8, 1, 9);
+  c.fillStyle = GB2; c.fillRect(C.x + 7, C.y + 15, 24, 2);
+  c.fillStyle = GB3; c.fillRect(C.x + 3, C.y + 18, 1, 3); c.fillRect(C.x + 34, C.y + 18, 1, 3);
+  shadowDither(c, C.x + 2, C.y + 19, 34);
+  // two small round tables, each with a pair of stools
+  for (const T of L.tables) {
+    fillCircOn(c, T.x, T.y + 1, 7, GB2);
+    fillCircOn(c, T.x, T.y, 7, GB3);
+    fillCircOn(c, T.x, T.y + 1, 6, GB1);
+    fillCircOn(c, T.x, T.y, 6, GB0);
+    fillCircOn(c, T.x, T.y - 1, 5, GB0);
+    c.fillStyle = GB3; c.fillRect(T.x - 2, T.y - 3, 3, 3);               // a cup on the table
+    c.fillStyle = GB0; c.fillRect(T.x - 1, T.y - 2, 1, 1);
+    for (const sx of [T.x - 12, T.x + 12]) {
+      fillCircOn(c, sx, T.y + 1, 4, GB2);
+      fillCircOn(c, sx, T.y, 4, GB3);
+      fillCircOn(c, sx, T.y, 3, GB1);
+    }
   }
-  // potted plants
-  potPlant(c, 2, 26);
+  // colour pass: each region gets its own 4-colour palette (SGB style)
+  tintRegion(c, 0, 0, PW, 25, PAL.wall);
+  tintRegion(c, L.couch.x, L.couch.y, 40, 22, PAL.couch);
+  tintRegion(c, L.booth.x - 2, L.booth.y - 2, L.booth.w + 4, L.booth.h + 6, PAL.booth);
+  tintRegion(c, L.cafe.x - 2, L.cafe.y - 2, L.cafe.w + 4, L.cafe.h + 6, PAL.cafe);
 }
 /* ============================== DYNAMIC DRAWING ============================== */
 const ui = { devices: [], menuOpen: false, menuIdx: 0, msg: '', msgUntil: 0 };
@@ -1349,6 +1366,17 @@ function drawRecordSprite(x, y, img, hidden) {
     p.fillStyle = GB1; p.fillRect(x - 1, y - 1, 2, 2);
   }
 }
+function cigarette(x, y, dir, qT) {      // stub at the mouth + a wisp drifting over his head
+  const left = dir === 2;
+  const cx = left ? x + 2 : x + 9;
+  const cy = y + 9;
+  p.fillStyle = GB3; p.fillRect(cx, cy, 3, 1);                            // dark stub on the light face
+  p.fillStyle = GB1; p.fillRect(left ? cx - 1 : cx + 3, cy, 1, 1);        // ember
+  const d = Math.floor(qT * 2) % 3;                                       // slow drift
+  p.fillStyle = GB1;
+  p.fillRect(left ? cx - 1 : cx + 3, y - 3 - d, 1, 1);
+  p.fillRect(left ? cx - 2 : cx + 4, y - 6 - d, 1, 1);
+}
 function drawDJ(qT) {
   const acting = dj.state === 'swap' || dj.state === 'scratch';
   const deck = dj.state === 'swap' ? dj.swapDeck : dj.scratchDeck;
@@ -1363,12 +1391,13 @@ function drawDJ(qT) {
     dir = deck === 0 ? 2 : 3;
   }
   drawPerson(x, y, bob, { cap: true, phones: true, shirt: GB2, dir });
+  cigarette(x, y - bob, dir, qT);
   if (acting) {
     const tp = dj.state === 'swap' ? swapTarget(dj.t) : scratchTarget(dj.t);
     const sh = { x: x + (deck === 0 ? 4 : 12), y: y + 11 };
     let dx = tp.x - sh.x, dy = tp.y - sh.y;
     const d = Math.hypot(dx, dy) || 1;
-    const m = Math.min(d, 9) / d;
+    const m = Math.min(d, dj.state === 'swap' ? 13 : 9) / d;   // longer reach so the hand meets the platter
     const hx = Math.round(sh.x + dx * m), hy = Math.round(sh.y + dy * m);
     pxLine(sh.x, sh.y, hx, hy, GB3, 2);
     p.fillStyle = GB0; p.fillRect(hx, hy, 2, 2);
@@ -1386,17 +1415,29 @@ function drawDJ(qT) {
 /* ============================== LOUNGE PATRONS (autonomous) ============================== */
 const BLOCK = [
   [0, 0, 160, 25],       // wall band
+  [0, 26, 42, 22],       // couch (top-left, faces the viewer)
   [38, 44, 84, 34],      // dj booth + shadow
-  [118, 40, 42, 28],     // coffee bar
-  [120, 64, 24, 17],     // pastry case (built into the bar front)
-  [0, 68, 32, 36],       // couch
-  [34, 84, 48, 17],      // table + stools
-  [0, 24, 22, 24],       // plant corner
+  [122, 28, 38, 26],     // coffee bar (tight against the back wall)
+  [18, 84, 18, 16],      // small table (left)
+  [128, 86, 18, 16],     // small table (right)
   [0, 104, 160, 40],     // dialog box
 ];
-const SPOTS = [[28, 38], [28, 56], [28, 44], [92, 88], [104, 96], [112, 80], [96, 100], [88, 80], [116, 96]];
-const SERVICE = [148, 76];
-const COUCH_CHAT = [38, 80];
+const SPOTS = [[52, 86], [68, 84], [86, 86], [104, 84], [60, 98], [80, 96], [100, 98], [112, 88]];
+const SERVICE = [140, 60];
+const COUCH_CHAT = [22, 56];
+const SEATS = [[12, 90], [40, 90], [122, 92], [150, 92]];   // two per table
+const seatTaken = SEATS.map(() => -1);
+function claimSeat(a) {
+  const free = [];
+  for (let i = 0; i < SEATS.length; i++) if (seatTaken[i] < 0) free.push(i);
+  if (!free.length) return -1;
+  const i = free[Math.floor(rand(0, free.length))];
+  seatTaken[i] = a.id; a.seat = i;
+  return i;
+}
+function releaseSeat(a) {
+  if (a.seat >= 0) { seatTaken[a.seat] = -1; a.seat = -1; }
+}
 function blockedAt(fx, fy) {
   for (const b of BLOCK) if (fx >= b[0] && fx < b[0] + b[2] && fy >= b[1] && fy < b[1] + b[3]) return true;
   return false;
@@ -1413,13 +1454,13 @@ let agentSeq = 0;
 function mkAgent(sp, look) {
   return { id: agentSeq++, x: sp[0] - 8, y: sp[1] - 14, dir: 0, state: 'idle',
            until: 0, tx: 0, ty: 0, next: 'idle',
-           odo: 0, cup: 0, look, em: '', emUntil: 0, partner: -1, stuck: 0 };
+           odo: 0, cup: 0, look, em: '', emUntil: 0, partner: -1, stuck: 0, seat: -1 };
 }
 const agents = [                         // spawn feet at least 12px apart
-  mkAgent([28, 38], { cap: false, shirt: GB1 }),
-  mkAgent([92, 88], { cap: true, shirt: GB1 }),
-  mkAgent([104, 96], { cap: false, shirt: GB2 }),
-  mkAgent([112, 80], { cap: true, shirt: GB2 }),
+  mkAgent([52, 86], { cap: false, shirt: GB1 }),
+  mkAgent([86, 86], { cap: true, shirt: GB1 }),
+  mkAgent([104, 84], { cap: false, shirt: GB2 }),
+  mkAgent([80, 96], { cap: true, shirt: GB2 }),
 ];
 const agentFeet = a => ({ x: a.x + 8, y: a.y + 14 });
 const inColumn = (fx, fy) => fx < 38 && fy < 66;
@@ -1448,13 +1489,17 @@ function setWalk(a, fx, fy, next, now) {
   a.bestD = 999; a.bestT = now;
 }
 function pickActivity(a, now) {
+  releaseSeat(a);                                          // whatever we do next, give the chair back
   const r = Math.random();
-  if (r < 0.40) { a.state = 'idle'; a.until = now + rand(4000, 9000); a.dir = 0; }
-  else if (r < 0.66) {
+  if (r < 0.30) { a.state = 'idle'; a.until = now + rand(4000, 9000); a.dir = 0; }
+  else if (r < 0.52 && claimSeat(a) >= 0) {                // go sit at a table
+    const st = SEATS[a.seat];
+    setWalk(a, st[0], st[1], 'sit', now);
+  } else if (r < 0.70) {
     const s = SPOTS[Math.floor(rand(0, SPOTS.length))];
     setWalk(a, s[0], s[1], 'idle', now);
     a.until = now + rand(3500, 7000);
-  } else if (r < 0.86 && !a.cup) {
+  } else if (r < 0.88 && !a.cup) {
     setWalk(a, SERVICE[0], SERVICE[1], 'order', now);
   } else {
     const others = agents.filter(b => b !== a && b.state === 'idle');
@@ -1511,6 +1556,7 @@ function stepAgent(a, dtS, now) {
       if (a.via.length) { const v = a.via.shift(); a.tx = v[0]; a.ty = v[1]; a.ax = ''; a.bestD = 999; a.bestT = now; a.t0 = now; return; }
       a.state = a.next;
       if (a.state === 'order') { a.until = now + 1800; a.dir = 1; }
+      else if (a.state === 'sit') { a.until = now + rand(9000, 22000); a.dir = 0; }
       else if (a.state === 'chat') {
         if (a.partner >= 0) {
           const b = agents.find(z => z.id === a.partner);
@@ -1541,6 +1587,9 @@ function drawCrowd(qT, nowMs) {
   drawSitter(L.sitter.x, L.sitter.y, 0);
   const ordering = agents.some(a => a.state === 'order');
   drawPerson(L.barista.x, L.barista.y, 0, { cap: true, phones: false, shirt: GB2, apron: true });
+  // counter is re-drawn over his legs so he stands behind it instead of on it
+  const CF = L.cafe;
+  p.drawImage(roomCv, CF.x, CF.y, CF.w, CF.h + 2, CF.x, CF.y, CF.w, CF.h + 2);
   if (ordering) { wipe.until = nowMs + 120; wipe.serveX = SERVICE[0] - 2; }   // hands the cup over
   else if (nowMs > wipe.nextAt) { wipe.nextAt = nowMs + rand(7000, 12000); wipe.until = nowMs + 900; wipe.serveX = 0; }
   if (nowMs < wipe.until) {
@@ -1553,7 +1602,8 @@ function drawCrowd(qT, nowMs) {
   const sorted = [...agents].sort((u, v) => u.y - v.y);
   for (const a of sorted) {
     const frame = a.state === 'walk' ? Math.floor(a.odo / 5) % 2 : 0;
-    drawPerson(a.x, a.y, frame, { cap: a.look.cap, shirt: a.look.shirt, phones: false, dir: a.dir, cup: !!a.cup });
+    if (a.state === 'sit') drawSitter(a.x, a.y + 2, 0);
+    else drawPerson(a.x, a.y, frame, { cap: a.look.cap, shirt: a.look.shirt, phones: false, dir: a.dir, cup: !!a.cup });
     if (a.em) drawBubble(a.x + 3, a.y - 13, a.em);
     else if (a.state === 'chat' && Math.floor(qT * 0.6 + a.id) % 3 === 0) drawBubble(a.x + 3, a.y - 13, a.id % 2 ? '?' : '!');
   }
