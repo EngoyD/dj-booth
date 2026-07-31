@@ -8,7 +8,7 @@
   Demo:  add ?demo to run everything with invented tracks and zero Spotify.
   Keys:  WASD move · Shift sprint · click to look · Esc release
          F fullscreen · G audio input · Space play/pause · left/right prev/next
-         M minimap · R regenerate · D debug
+         M minimap · R regenerate · NN reset progress · D debug
   Idle ~20s hands over to right-hand-rule auto-nav. Any input takes it back.
 -->
 <html lang="en">
@@ -31,6 +31,7 @@
   #np .b{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#b98fd0;margin-top:9px}
   #lvl{position:absolute;right:26px;top:22px;text-align:right;font-size:11px;letter-spacing:3px;
     text-transform:uppercase;color:#b98fd0}
+  #lvl i{display:block;font-style:normal;margin-top:8px;font-size:10px;letter-spacing:2px;color:#8f6aa8}
   #lvl b{display:block;font-size:30px;letter-spacing:2px;color:#7df9ff;font-weight:700;
     text-shadow:0 0 18px rgba(125,249,255,.8);margin-bottom:2px}
   #mm{position:absolute;right:22px;bottom:22px;width:170px;height:170px;
@@ -66,7 +67,7 @@
 <canvas id="gl"></canvas>
 <div id="ui">
   <div id="dbg"></div>
-  <div id="lvl"><b>1</b>Level</div>
+  <div id="lvl"><b>1</b>Level<i id="score"></i></div>
   <div id="np"><div class="t">Neon Maze</div><div class="a">Not connected</div><div class="b"></div></div>
   <canvas id="mm" width="340" height="340"></canvas>
   <div id="msg"></div>
@@ -232,7 +233,7 @@ function onPlayback(j) {
   const url = imgs.length ? imgs[Math.min(1, imgs.length - 1)].url : '';
   if (url !== playback.artUrl) { playback.artUrl = url; loadArt(url); }
   else if (!url && changed) loadArt('');
-  if (changed) { level = 1; rebuild(hashSeed(id)); flash = 1.0; }
+  if (changed) { rebuild(hashSeed(id)); flash = 1.0; }   // new maze from the new track, same difficulty
   paintNowPlaying();
 }
 async function poll() {
@@ -933,6 +934,34 @@ function blit(mat, target) {
 
 /* ============================== MAZE STATE ============================== */
 let maze = null, level = 1, exitCell = { cx: 0, cz: 0 }, explored = null;
+
+/* progress survives reloads. localStorage is per-origin, so this is per-browser, not per-account. */
+const save = {
+  level: 1, cleared: 0, best: 1, ms: 0, dirty: false, lastWrite: 0,
+  load() {
+    let j = {};
+    try { j = JSON.parse(ls.get('mz.save') || '{}') || {}; } catch (e) {}
+    this.level = clamp(Math.floor(+j.level || 1), 1, 999);
+    this.cleared = Math.max(0, Math.floor(+j.cleared || 0));
+    this.best = Math.max(1, Math.floor(+j.best || 1));
+    this.ms = Math.max(0, +j.ms || 0);
+  },
+  write() {
+    this.dirty = false; this.lastWrite = performance.now();
+    ls.set('mz.save', JSON.stringify({
+      level: this.level, cleared: this.cleared, best: this.best, ms: Math.round(this.ms), v: 1,
+    }));
+  },
+  wipe() { ls.del('mz.save'); this.level = 1; this.cleared = 0; this.best = 1; this.ms = 0; },
+};
+function fmtDur(ms) {
+  const m = Math.floor(ms / 60000);
+  return m < 60 ? m + 'm' : Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+function paintScore() {
+  const el = document.getElementById('score');
+  if (el) el.textContent = 'cleared ' + save.cleared + ' · best ' + save.best + ' · ' + fmtDur(save.ms);
+}
 let flash = 0, hueShift = 0, curSeed = 0;
 const player = { x: CELL / 2, z: CELL / 2, yaw: 0, pitch: 0, bob: 0, vel: 0 };
 const auto = { on: false, cx: 0, cz: 0, dir: N, tx: 0, tz: 0, yaw: 0 };
@@ -1028,7 +1057,7 @@ function markExplored() {
 
 /* ============================== INPUT ============================== */
 const keys = Object.create(null);
-let locked = false;
+let locked = false, resetArm = 0;
 const elHint = document.getElementById('hint');
 
 function touchInput() {
@@ -1047,6 +1076,13 @@ addEventListener('keydown', e => {
   if (k === 'm') { const mm = document.getElementById('mm'); mm.style.display = mm.style.display === 'none' ? 'block' : 'none'; return; }
   if (k === 'd') { const d = document.getElementById('dbg'); d.style.display = d.style.display === 'block' ? 'none' : 'block'; return; }
   if (k === 'r') { rebuild(hashSeed(playback.trackId || 'seed') ^ (Math.random() * 1e9 | 0)); flash = 0.8; setMsg('Regenerated'); return; }
+  if (k === 'n') {
+    if (performance.now() - resetArm < 2000) {
+      resetArm = 0; save.wipe(); level = 1;
+      rebuild(hashSeed(playback.trackId || 'neon-maze')); paintScore(); flash = 1.0; setMsg('Progress reset');
+    } else { resetArm = performance.now(); setMsg('Press N again to wipe progress'); }
+    return;
+  }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 addEventListener('mousemove', e => {
@@ -1065,6 +1101,9 @@ document.addEventListener('pointerlockchange', () => {
   elHint.style.display = locked ? 'none' : 'block';
 });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+const flushSave = () => { save.level = level; save.write(); };
+addEventListener('pagehide', flushSave);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushSave(); });
 
 function fsEl() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
 function toggleFullscreen() {
@@ -1211,6 +1250,8 @@ function frame(now) {
     player.x = p.x; player.z = p.z;
   }
   player.bob += dtS * player.vel * (keys['shift'] ? 13 : 9);
+  if (!auto.on) { save.ms += dtS * 1000; save.dirty = true; }
+  if (save.dirty && now - save.lastWrite > 10000) { save.level = level; save.write(); paintScore(); }
   markExplored();
 
   /* --- exit reached --- */
@@ -1218,9 +1259,14 @@ function frame(now) {
   const pcz = clamp(cellOf(player.z), 0, maze.rows - 1);
   if (pcx === exitCell.cx && pcz === exitCell.cz) {
     level++;
+    if (!auto.on) save.cleared++;                 // auto-nav solves it for you; that is not a score
+    save.level = level;
+    save.best = Math.max(save.best, level);
+    save.write();
     rebuild(hashSeed((playback.trackId || 'seed') + ':' + level));
     flash = 1.0;
-    setMsg('Level ' + level + ' — ' + maze.cols + '\u00d7' + maze.rows);
+    setMsg(auto.on ? 'Auto-cleared — level ' + level
+                   : 'Level ' + level + ' — ' + maze.cols + '\u00d7' + maze.rows);
   }
 
   /* --- camera --- */
@@ -1320,7 +1366,11 @@ document.getElementById('btnSave').onclick = () => {
 /* ============================== BOOT ============================== */
 (async function boot() {
   resize();
+  save.load();
+  level = save.level;
   rebuild(hashSeed('neon-maze'));
+  paintScore();
+  if (save.cleared || save.level > 1) setMsg('Resumed at level ' + level);
   procArt(0x5eed);
   await handleRedirect();
   paintNowPlaying();
