@@ -21,6 +21,7 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#07030f">
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%20%22DJ%20Booth%22%2C%20%22short_name%22%3A%20%22DJ%20Booth%22%2C%20%22start_url%22%3A%20%22.%2F%22%2C%20%22display%22%3A%20%22fullscreen%22%2C%20%22orientation%22%3A%20%22landscape%22%2C%20%22background_color%22%3A%20%22%23181410%22%2C%20%22theme_color%22%3A%20%22%23181410%22%7D">
 <title>DJ Booth</title>
 <style>
   html,body{margin:0;height:100%;background:#0a0a10;overflow:hidden;
@@ -41,6 +42,11 @@
   #setup h3{margin:0;font-size:15px;letter-spacing:2px}
   #setup code{background:#c8b078;color:#181410;border:2px solid #181410;padding:4px 8px;
     user-select:all;word-break:break-all;text-transform:none;letter-spacing:0}
+  #fsbtn{position:fixed;right:14px;bottom:14px;z-index:30;width:46px;height:46px;border-radius:10px;
+    background:rgba(10,4,20,.55);border:1px solid rgba(160,220,255,.45);color:#dff4ff;font-size:20px;
+    display:grid;place-items:center;cursor:pointer;opacity:.85;transition:opacity .4s;
+    -webkit-tap-highlight-color:transparent;backdrop-filter:blur(4px)}
+  #fsbtn.dim{opacity:0}
 </style>
 </head>
 <body>
@@ -345,6 +351,44 @@ function resize() {
 }
 addEventListener('resize', resize);
 resize();
+
+/* ============================== TOUCH FULLSCREEN ============================== */
+// tablets have no F key, so expose a real control. it fades out when idle and
+// comes back on any touch, so it does not sit on top of the visual.
+(function () {
+  const btn = document.createElement('div');
+  btn.id = 'fsbtn';
+  btn.textContent = '\u26F6';
+  btn.setAttribute('role', 'button');
+  btn.setAttribute('aria-label', 'Toggle fullscreen');
+  document.body.appendChild(btn);
+  let idle;
+  function poke() {
+    btn.classList.remove('dim');
+    clearTimeout(idle);
+    idle = setTimeout(() => btn.classList.add('dim'), 3000);
+  }
+  function goFull() {
+    const d = document.documentElement;
+    const inFs = document.fullscreenElement || document.webkitFullscreenElement;
+    try {
+      if (inFs) {
+        (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      } else {
+        const req = d.requestFullscreen || d.webkitRequestFullscreen || d.webkitRequestFullScreen;
+        if (req) Promise.resolve(req.call(d)).catch(() => {});
+      }
+    } catch (e) {}
+    if (typeof acquireWake === 'function') acquireWake();
+    poke();
+  }
+  btn.addEventListener('click', e => { e.stopPropagation(); goFull(); });
+  btn.addEventListener('touchend', e => { e.preventDefault(); e.stopPropagation(); goFull(); }, { passive: false });
+  for (const ev of ['pointerdown', 'touchstart', 'mousemove']) {
+    addEventListener(ev, poke, { passive: true });
+  }
+  poke();
+})();
 
 /* ============================== WAKE LOCK ============================== */
 // tablets dim and lock on a timer regardless of what is on screen. hold a screen
