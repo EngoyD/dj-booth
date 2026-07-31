@@ -216,7 +216,7 @@ function placeCars(segs, cars) {
 function newState(seed) {
   return {
     seed: seed >>> 0, position: 0, speed: 0, playerX: 0,
-    nitro: 0, boosting: false, time: CFG.timeStart, elapsed: 0,
+    nitro: 0, boosting: false, steerSmooth: 0, time: CFG.timeStart, elapsed: 0,
     distance: 0, score: 0, overtakes: 0, nearMisses: 0, crashes: 0,
     cpIndex: 0, over: false, shake: 0, lastCarZ: new Map(),
   };
@@ -238,7 +238,11 @@ function step(st, segs, cars, dt, input) {
   if (!st.boosting && st.speed > CFG.maxSpeed) st.speed += CFG.decel * dt * 3;
   st.speed = clamp(st.speed, 0, ceiling);
 
-  if (input.steer) st.playerX += input.steer * dx;
+  // steering is rate-limited, not instant: turn-in eases, return-to-centre is quicker
+  const sTarget = clamp(input.steer || 0, -1, 1);
+  const sTau = Math.abs(sTarget) < Math.abs(st.steerSmooth) ? 0.085 : 0.155;
+  st.steerSmooth += (sTarget - st.steerSmooth) * (1 - Math.exp(-dt / sTau));
+  st.playerX += st.steerSmooth * dx;
   st.playerX -= dx * speedPct * seg.curve * CFG.centrifugal;
 
   const offRoad = Math.abs(st.playerX) > 1;
@@ -768,24 +772,18 @@ function drawBillboard(x, groundY, h, dim, b) {
 }
 
 /* --- cars --- */
+const TRAFFIC_PAINT = [                                   // supercar colours, not saloon greys
+  ['#d9ff5a', '#a8e015', '#4f6b06'], ['#ffb03a', '#f07a00', '#7a3600'],
+  ['#7df9ff', '#25c2d8', '#0b5566'], ['#c98bff', '#8b3fe0', '#3d1470'],
+  ['#e8ecff', '#9aa6c8', '#3b4160'], ['#9dff9b', '#2fd45a', '#0c5a24'],
+];
 function drawTrafficCar(x, groundY, w, hue, dim) {
-  const h = w * 0.62;
-  const top = groundY - h;
-  const r = Math.round(120 + 135 * Math.abs(Math.sin(hue * 6.283)));
-  const g = Math.round(40 + 80 * Math.abs(Math.sin(hue * 6.283 + 2)));
-  const bl = Math.round(120 + 130 * Math.abs(Math.sin(hue * 6.283 + 4)));
-  ctx.fillStyle = rgba(8, 3, 18, dim * 0.55);
-  ctx.beginPath(); ctx.ellipse(x, groundY, w * 0.55, h * 0.14, 0, 0, 6.283); ctx.fill();
-  ctx.fillStyle = rgba(r, g, bl, dim);
-  ctx.fillRect(x - w * 0.42, top + h * 0.30, w * 0.84, h * 0.62);
-  ctx.fillRect(x - w * 0.28, top + h * 0.04, w * 0.56, h * 0.34);
-  ctx.fillStyle = rgba(10, 4, 22, dim);
-  ctx.fillRect(x - w * 0.24, top + h * 0.10, w * 0.48, h * 0.22);
-  ctx.fillRect(x - w * 0.50, top + h * 0.52, w * 0.14, h * 0.46);
-  ctx.fillRect(x + w * 0.36, top + h * 0.52, w * 0.14, h * 0.46);
-  ctx.fillStyle = rgba(255, 70, 70, dim);
-  ctx.fillRect(x - w * 0.36, top + h * 0.52, w * 0.16, h * 0.13);
-  ctx.fillRect(x + w * 0.20, top + h * 0.52, w * 0.16, h * 0.13);
+  const p = TRAFFIC_PAINT[Math.floor(hue * TRAFFIC_PAINT.length) % TRAFFIC_PAINT.length];
+  ctx.save();
+  ctx.globalAlpha = dim;
+  drawCar(x, groundY, w, { hi: p[0], mid: p[1], lo: p[2], lamp: [255, 60, 60],
+    edge: 'rgba(255,255,255,.28)', lod: w < 46 ? 0 : 1, t: 0 });
+  ctx.restore();
 }
 /* --- player car: wedge supercar, rear view. Geometry verified before any of this was written:
    normalised x in [-1,1] = half-widths, y in [0,1] = ground to roof. Every detail below was
@@ -805,8 +803,11 @@ const CAR = {
   vent: { x0:0.74, x1:0.94, y0:0.31, y1:0.40 },
 };
 
-function drawPlayerCar(cx, groundY, w, steer, boost, t, braking) {
+function drawCar(cx, groundY, w, o) {
   const A = CAR, hh = w * A.aspect;
+  const steer = o.steer || 0, boost = o.boost || 0, t = o.t || 0, braking = o.braking;
+  const HI = o.hi || '#ff5f86', MID = o.mid || '#ff2f6d', LO = o.lo || '#8e0f3c';
+  const LAMP = o.lamp || [255, 40, 80], EDGE = o.edge || 'rgba(255,190,215,.55)';
   const tilt = clamp(steer || 0, -1, 1) * w * 0.026;
   const PX = nx => cx + tilt + nx * w / 2;
   const PY = ny => groundY - ny * hh;
@@ -839,8 +840,9 @@ function drawPlayerCar(cx, groundY, w, steer, boost, t, braking) {
   }
 
   const bg = ctx.createLinearGradient(0, PY(0.98), 0, PY(0.06));
-  bg.addColorStop(0, '#ff5f86'); bg.addColorStop(0.42, '#ff2f6d'); bg.addColorStop(1, '#8e0f3c');
+  bg.addColorStop(0, HI); bg.addColorStop(0.42, MID); bg.addColorStop(1, LO);
   path(A.body); ctx.fillStyle = bg; ctx.fill();
+  if (o.lod === 0) { lamps(); return; }   // far traffic: silhouette and lit lamps only
 
   ctx.fillStyle = 'rgba(9,3,20,.92)';                       // diffuser
   box(-A.diffuser.x, A.diffuser.x, A.diffuser.y0, A.diffuser.y1);
@@ -863,6 +865,8 @@ function drawPlayerCar(cx, groundY, w, steer, boost, t, braking) {
     box(a, a + (A.vent.x1 - A.vent.x0), A.vent.y0, A.vent.y1);
   }
 
+  lamps();
+  function lamps() {
   const lit = braking ? 1 : 0.72;                           // hexagonal tail lamps
   for (const sd of [-1, 1]) {
     const L = A.lamp, m = v => sd * v;
@@ -870,13 +874,14 @@ function drawPlayerCar(cx, groundY, w, steer, boost, t, braking) {
     path([[m(L.x0), my], [m(L.x0 + 0.07), L.y1], [m(L.x1 - 0.07), L.y1],
           [m(L.x1), my], [m(L.x1 - 0.07), L.y0], [m(L.x0 + 0.07), L.y0]]);
     ctx.fillStyle = 'rgba(24,6,26,.95)'; ctx.fill();
-    ctx.shadowColor = 'rgba(255,40,80,.95)'; ctx.shadowBlur = braking ? 26 : 13;
-    ctx.fillStyle = 'rgba(255,' + Math.round(40 + 40 * lit) + ',' + Math.round(70 + 40 * lit) + ',' + lit + ')';
+    ctx.shadowColor = 'rgba(' + LAMP.join(',') + ',.95)'; ctx.shadowBlur = braking ? 26 : 13;
+    ctx.fillStyle = 'rgba(' + LAMP[0] + ',' + Math.round(LAMP[1] + 40 * lit) + ',' + Math.round(LAMP[2] + 40 * lit) + ',' + lit + ')';
     box(sd > 0 ? L.x0 + 0.05 : -(L.x1 - 0.05), (sd > 0 ? L.x0 + 0.05 : -(L.x1 - 0.05)) + (L.x1 - L.x0 - 0.10),
         my - 0.022, my + 0.022);
     ctx.shadowBlur = 0;
     ctx.fillStyle = 'rgba(255,150,170,' + (0.5 * lit) + ')';
     box(sd > 0 ? L.x0 + 0.09 : -(L.x1 - 0.09), (sd > 0 ? L.x0 + 0.09 : -(L.x1 - 0.09)) + 0.10, L.y0 + 0.02, L.y1 - 0.02);
+  }
   }
 
   ctx.fillStyle = '#7df9ff';                                // ducktail
@@ -901,7 +906,7 @@ function drawPlayerCar(cx, groundY, w, steer, boost, t, braking) {
   }
 
   path(A.body);                                             // neon edge last, over everything
-  ctx.strokeStyle = 'rgba(255,190,215,.55)'; ctx.lineWidth = Math.max(1, w * 0.007); ctx.stroke();
+  ctx.strokeStyle = EDGE; ctx.lineWidth = Math.max(1, w * 0.007); ctx.stroke();
 }
 
 /* --- the main pseudo-3D pass --- */
@@ -943,7 +948,7 @@ function renderRoad(b, boost) {
     const rw1 = w1 / Math.max(6, 18 - 10 * near), rw2 = w2 / Math.max(6, 18 - 10 * near);
     // rumble strips: alternation fades out with distance so it stops aliasing
     const rl = seg.rumble ? [255, 95, 208] : [125, 249, 255];
-    const ra = 0.30 + 0.62 * near;
+    const ra = 0.44 + 0.54 * near;
     poly(x1 - w1 - rw1, y1 + 1, x1 - w1, y1 + 1, x2 - w2, y2, x2 - w2 - rw2, y2, rgba(rl[0], rl[1], rl[2], ra));
     poly(x1 + w1 + rw1, y1 + 1, x1 + w1, y1 + 1, x2 + w2, y2, x2 + w2 + rw2, y2, rgba(rl[0], rl[1], rl[2], ra));
 
@@ -989,6 +994,21 @@ function renderRoad(b, boost) {
       ctx.restore();
     }
   }
+  const hy = H * 0.5;
+  const hz = ctx.createLinearGradient(0, hy - 8, 0, hy + 250);
+  hz.addColorStop(0, 'rgba(255,116,150,0.46)');
+  hz.addColorStop(0.30, 'rgba(158,62,146,0.22)');
+  hz.addColorStop(1, 'rgba(60,20,90,0)');
+  ctx.fillStyle = hz;
+  ctx.fillRect(0, hy - 8, W, 258);
+
+  const sp = ctx.createRadialGradient(W / 2, hy + 10, 8, W / 2, hy + 10, 460);   // light spill down the road
+  sp.addColorStop(0, 'rgba(255,168,132,' + (0.15 + 0.17 * b) + ')');
+  sp.addColorStop(0.45, 'rgba(255,110,170,' + (0.06 + 0.08 * b) + ')');
+  sp.addColorStop(1, 'rgba(255,110,170,0)');
+  ctx.fillStyle = sp;
+  ctx.fillRect(0, hy - 20, W, 480);
+
   return { horizon: Math.min(H, maxy), playerSeg };
 }
 
@@ -1025,6 +1045,7 @@ function mono(s, x, y, size, col, align) {
   ctx.fillStyle = col;
   ctx.fillText(s, x, y);
 }
+function fmtTime(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
 function drawGauge(cx, cy, r, pct, boost) {
   ctx.lineWidth = 9;
   ctx.strokeStyle = 'rgba(255,217,242,.14)';
@@ -1092,8 +1113,16 @@ function drawHUD(t, b) {
   // now playing
   const title = playback.title || (demo.on ? 'Demo Mode' : hasTok() ? 'Nothing playing' : 'Nitro');
   const artist = playback.artist || (demo.on ? 'No Spotify' : hasTok() ? 'Spotify idle' : 'Press ENTER to connect');
-  txt(title, 34, H - 52, 21, '#fff8ff', 'left', 700, 'rgba(255,95,208,.8)');
-  txt(artist.toUpperCase(), 34, H - 32, 12, '#7df9ff', 'left', 600, 'rgba(125,249,255,.6)');
+  txt(title, 34, H - 68, 21, '#fff8ff', 'left', 700, 'rgba(255,95,208,.8)');
+  txt(artist.toUpperCase(), 34, H - 48, 12, '#7df9ff', 'left', 600, 'rgba(125,249,255,.6)');
+  if (playback.durationMs > 0) {
+    const cur = Math.min(estProgress(), playback.durationMs), dur = playback.durationMs;
+    mono(fmtTime(cur) + '  /  ' + fmtTime(dur), 34, H - 26, 12, '#b98fd0');
+    const bx = 34, by = H - 18, bw = 208;
+    ctx.fillStyle = 'rgba(255,217,242,.16)'; ctx.fillRect(bx, by, bw, 3);
+    ctx.fillStyle = art.accent;
+    ctx.fillRect(bx, by, bw * clamp01(cur / Math.max(dur, 1)), 3);
+  }
 
   if (auto) txt('AUTO-DRIVE \u00b7 ANY KEY TO TAKE OVER', W / 2, H - 14, 11, '#8f6aa8', 'center', 700);
 
@@ -1165,7 +1194,7 @@ function frame(now) {
   drawRidge(ridgeA, horizon + 8, horizonShift * 0.8, 'rgba(18,6,38,.98)', 'rgba(255,95,208,.30)');
 
   renderRoad(b.bass, boost);
-  drawPlayerCar(W / 2, H - 92, 232, auto ? input.steer : readInput().steer, boost, t, !!input.brake);
+  drawCar(W / 2, H - 92, 232, { steer: st.steerSmooth, boost, t, braking: !!input.brake, lod: 1 });
   if (st.speed > CFG.maxSpeed * 0.55 || boost) drawSpeedLines(t, boost * 0.9 + clamp01(st.speed / CFG.maxSpeed) * 0.25, st.speed);
 
   // scanlines over the scene only; the HUD is drawn after so it never bands
