@@ -1,0 +1,1332 @@
+<!doctype html>
+<!--
+  maze.html — first-person neon maze that doubles as a Spotify visualizer.
+  Win95 3D Maze, rebuilt synthwave. Three.js r128, hand-rolled bloom, no build step.
+
+  Run:   python3 -m http.server 5173 --bind 127.0.0.1
+  Open:  http://127.0.0.1:5173/maze.html
+  Demo:  add ?demo to run everything with invented tracks and zero Spotify.
+  Keys:  WASD move · Shift sprint · click to look · Esc release
+         F fullscreen · G audio input · Space play/pause · left/right prev/next
+         M minimap · R regenerate · D debug
+  Idle ~20s hands over to right-hand-rule auto-nav. Any input takes it back.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Neon Maze</title>
+<style>
+  html,body{margin:0;height:100%;background:#07030f;overflow:hidden;
+    font:14px/1.4 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;color:#ffd9f2}
+  #gl{position:fixed;inset:0;display:block;width:100%;height:100%}
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:5}
+  #np{position:absolute;left:26px;bottom:24px;max-width:46vw}
+  #np .t{font-size:22px;font-weight:700;letter-spacing:.5px;color:#fff8ff;
+    text-shadow:0 0 18px rgba(255,95,208,.9),0 0 40px rgba(255,95,208,.45);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #np .a{font-size:13px;letter-spacing:2.5px;text-transform:uppercase;color:#7df9ff;
+    text-shadow:0 0 12px rgba(125,249,255,.75);margin-top:5px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #np .b{font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#b98fd0;margin-top:9px}
+  #lvl{position:absolute;right:26px;top:22px;text-align:right;font-size:11px;letter-spacing:3px;
+    text-transform:uppercase;color:#b98fd0}
+  #lvl b{display:block;font-size:30px;letter-spacing:2px;color:#7df9ff;font-weight:700;
+    text-shadow:0 0 18px rgba(125,249,255,.8);margin-bottom:2px}
+  #mm{position:absolute;right:22px;bottom:22px;width:170px;height:170px;
+    border:1px solid rgba(255,95,208,.45);border-radius:6px;background:rgba(7,3,15,.55);
+    box-shadow:0 0 26px rgba(255,95,208,.22),inset 0 0 22px rgba(90,20,140,.35)}
+  #msg{position:absolute;left:50%;top:34px;transform:translateX(-50%);font-size:12px;
+    letter-spacing:2.5px;text-transform:uppercase;color:#ffd9f2;opacity:0;transition:opacity .25s;
+    text-shadow:0 0 14px rgba(255,95,208,.8);white-space:nowrap}
+  #hint{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;
+    font-size:12px;letter-spacing:3px;text-transform:uppercase;color:#ffd9f2;
+    text-shadow:0 0 16px rgba(255,95,208,.8);pointer-events:none}
+  #hint b{display:block;font-size:17px;letter-spacing:4px;color:#7df9ff;margin-bottom:8px}
+  #dbg{position:absolute;left:26px;top:22px;font:11px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:#7df9ff;display:none;white-space:pre;text-shadow:0 0 8px rgba(125,249,255,.5)}
+  #setup{position:fixed;inset:0;display:none;place-items:center;background:rgba(7,3,15,.82);z-index:20}
+  #setup .panel{background:linear-gradient(160deg,#2a0f45,#140726);border:1px solid #ff5fd0;
+    box-shadow:0 0 40px rgba(255,95,208,.35),inset 0 0 30px rgba(120,40,180,.35);
+    border-radius:10px;padding:22px;max-width:470px;display:flex;flex-direction:column;gap:12px}
+  #setup h3{margin:0;font-size:15px;letter-spacing:3px;text-transform:uppercase;
+    color:#7df9ff;text-shadow:0 0 12px rgba(125,249,255,.8)}
+  #setup code{background:#0d0518;border:1px solid #7a3a8a;padding:6px 9px;border-radius:5px;
+    user-select:all;word-break:break-all;font-size:12px;color:#ffd9f2}
+  #setup .note{font-size:12px;color:#b98fd0;line-height:1.5}
+  input{background:#0d0518;border:1px solid #7a3a8a;border-radius:5px;padding:9px;color:#ffd9f2;font-size:13px}
+  input:focus{outline:none;border-color:#ff5fd0;box-shadow:0 0 12px rgba(255,95,208,.4)}
+  button{cursor:pointer;background:linear-gradient(180deg,#ff5fd0,#b02a8a);border:none;border-radius:5px;
+    padding:9px 15px;color:#fff;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;font-weight:600}
+  button.ghost{background:transparent;border:1px solid #7a3a8a;color:#b98fd0}
+  button:hover{filter:brightness(1.15)}
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="ui">
+  <div id="dbg"></div>
+  <div id="lvl"><b>1</b>Level</div>
+  <div id="np"><div class="t">Neon Maze</div><div class="a">Not connected</div><div class="b"></div></div>
+  <canvas id="mm" width="340" height="340"></canvas>
+  <div id="msg"></div>
+  <div id="hint"><b>Click to enter</b>WASD to move &middot; Shift to run</div>
+</div>
+
+<div id="setup"><div class="panel">
+  <h3>Spotify Setup</h3>
+  <div class="note">Create an app at developer.spotify.com/dashboard (Web API), then add this exact Redirect URI to it:</div>
+  <code id="ruri"></code>
+  <input id="inClient" placeholder="Spotify Client ID" spellcheck="false" autocomplete="off">
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="ghost" id="btnReset">Reset auth</button>
+    <button class="ghost" id="btnCancel">Cancel</button>
+    <button id="btnSave">Save &amp; connect</button>
+  </div>
+</div></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ============================== CONFIG ============================== */
+const CONFIG = {
+  SPOTIFY_CLIENT_ID: '21e1242fd5504931af52031eeed0fbff',   // public by design (PKCE, no secret)
+  REDIRECT_URI: location.origin + location.pathname,
+  SCOPES: 'user-read-currently-playing user-read-playback-state user-modify-playback-state',
+  POLL_MS: 3000,
+  POLL_IDLE_MS: 10000,
+  BAND_SMOOTH_S: 0.10,
+
+  CELL: 4.0, WALL_H: 3.2, WALL_T: 0.25, PLAYER_R: 0.55,
+  EYE: 1.62,
+  SIZE_BASE: 11, SIZE_STEP: 2, SIZE_MAX: 31,
+  SPEED: 5.4, SPRINT: 9.0, AUTO_SPEED: 4.6,   // 4.6 u/s clears an 11x11 by right-hand rule in ~2.2 min (p90)
+  MOUSE_SENS: 0.0022, PITCH_MAX: 1.15,
+  IDLE_MS: 20000,
+  FOG: 0.052,
+  ART_EVERY: 7,
+  BLOOM_SCALE: 0.5,
+};
+const MAX_INST = (CONFIG.SIZE_MAX + 1) * CONFIG.SIZE_MAX * 2;   // 1984 at 31x31
+
+/* ============================== UTILS ============================== */
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+};
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const clamp01 = v => clamp(v, 0, 1);
+const lerp = (a, b, t) => a + (b - a) * t;
+function b64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+function angLerp(a, b, t) {
+  let d = (b - a) % (Math.PI * 2);
+  if (d > Math.PI) d -= Math.PI * 2;
+  if (d < -Math.PI) d += Math.PI * 2;
+  return a + d * t;
+}
+const elMsg = document.getElementById('msg');
+let msgUntil = 0;
+function setMsg(t) { elMsg.textContent = t; elMsg.style.opacity = '1'; msgUntil = performance.now() + 3000; }
+
+/* ============================== SPOTIFY AUTH (PKCE) ============================== */
+function getClientId() { return (ls.get('mz.cid') || CONFIG.SPOTIFY_CLIENT_ID || '').trim(); }
+function hasTok() { return !!(ls.get('mz.rt') || ls.get('mz.at')); }
+function clearAuth() { ['mz.at', 'mz.rt', 'mz.exp', 'mz.ver'].forEach(ls.del); }
+
+async function beginAuth() {
+  const cid = getClientId();
+  if (!cid) { openSetup(); return; }
+  const bytes = crypto.getRandomValues(new Uint8Array(64));
+  const verifier = b64url(bytes);
+  ls.set('mz.ver', verifier);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const params = new URLSearchParams({
+    client_id: cid, response_type: 'code', redirect_uri: CONFIG.REDIRECT_URI,
+    code_challenge_method: 'S256', code_challenge: b64url(digest), scope: CONFIG.SCOPES,
+  });
+  location.assign('https://accounts.spotify.com/authorize?' + params);
+}
+
+async function handleRedirect() {
+  const q = new URLSearchParams(location.search);
+  const code = q.get('code'), err = q.get('error');
+  if (err) { setMsg('Spotify: ' + err); history.replaceState({}, '', CONFIG.REDIRECT_URI); return; }
+  if (!code) return;
+  const verifier = ls.get('mz.ver');
+  history.replaceState({}, '', CONFIG.REDIRECT_URI);
+  if (!verifier) return;
+  try {
+    const r = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code', code, redirect_uri: CONFIG.REDIRECT_URI,
+        client_id: getClientId(), code_verifier: verifier,
+      }),
+    });
+    const j = await r.json();
+    if (j.access_token) storeTok(j); else setMsg('Auth failed: ' + (j.error_description || j.error || '?'));
+  } catch (e) { setMsg('Auth error'); }
+  ls.del('mz.ver');
+}
+function storeTok(j) {
+  ls.set('mz.at', j.access_token);
+  if (j.refresh_token) ls.set('mz.rt', j.refresh_token);
+  ls.set('mz.exp', String(Date.now() + (j.expires_in || 3600) * 1000 - 60000));
+}
+async function refreshTok() {
+  const rt = ls.get('mz.rt');
+  if (!rt) return false;
+  try {
+    const r = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rt, client_id: getClientId() }),
+    });
+    const j = await r.json();
+    if (j.access_token) { storeTok(j); return true; }
+  } catch (e) {}
+  return false;
+}
+async function tok() {
+  const exp = Number(ls.get('mz.exp') || 0);
+  if (ls.get('mz.at') && Date.now() < exp) return ls.get('mz.at');
+  if (await refreshTok()) return ls.get('mz.at');
+  return ls.get('mz.at');
+}
+async function api(path, opts) {
+  const t = await tok();
+  if (!t) return { status: 401 };
+  return fetch('https://api.spotify.com/v1' + path, {
+    ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t },
+  });
+}
+
+/* ============================== PLAYBACK ============================== */
+const playback = {
+  trackId: '', title: '', artist: '', isPlaying: false,
+  progressMs: 0, durationMs: 0, fetchedAt: 0, artUrl: '',
+};
+let pollTimer = 0, backoff = 1;
+function estProgress() {
+  if (!playback.isPlaying) return playback.progressMs;
+  return playback.progressMs + (performance.now() - playback.fetchedAt);
+}
+function onPlayback(j) {
+  if (!j || !j.item) {
+    playback.isPlaying = !!(j && j.is_playing);
+    playback.fetchedAt = performance.now();
+    return;
+  }
+  const id = j.item.id || j.item.uri;
+  const changed = id !== playback.trackId;
+  playback.trackId = id;
+  playback.title = j.item.name || '';
+  playback.artist = (j.item.artists || []).map(a => a.name).join(', ');
+  playback.isPlaying = !!j.is_playing;
+  playback.progressMs = j.progress_ms || 0;
+  playback.durationMs = j.item.duration_ms || 0;
+  playback.fetchedAt = performance.now();
+  const imgs = (j.item.album && j.item.album.images) || [];
+  const url = imgs.length ? imgs[Math.min(1, imgs.length - 1)].url : '';
+  if (url !== playback.artUrl) { playback.artUrl = url; loadArt(url); }
+  else if (!url && changed) loadArt('');
+  if (changed) { level = 1; rebuild(hashSeed(id)); flash = 1.0; }
+  paintNowPlaying();
+}
+async function poll() {
+  if (demo.on && !hasTok()) { schedulePoll(1000); return; }
+  if (!hasTok()) { schedulePoll(2000); return; }
+  try {
+    const r = await api('/me/player/currently-playing?additional_types=track');
+    if (r.status === 401) { if (await refreshTok()) return poll(); schedulePoll(8000); return; }
+    if (r.status === 429) {
+      const wait = Number(r.headers.get('retry-after') || 5);
+      schedulePoll((wait + 1) * 1000); return;
+    }
+    if (r.status === 204) { playback.isPlaying = false; backoff = 1; schedulePoll(CONFIG.POLL_IDLE_MS); paintNowPlaying(); return; }
+    if (!r.ok) throw new Error('http ' + r.status);
+    backoff = 1;
+    onPlayback(await r.json());
+    schedulePoll(playback.isPlaying ? CONFIG.POLL_MS : CONFIG.POLL_IDLE_MS);
+  } catch (e) {
+    backoff = Math.min(backoff * 2, 16);
+    schedulePoll(CONFIG.POLL_MS * backoff);
+  }
+}
+function schedulePoll(ms) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }
+
+async function transport(cmd) {
+  if (!hasTok()) { setMsg('Connect Spotify first'); return; }
+  const map = { play: ['PUT', '/me/player/play'], pause: ['PUT', '/me/player/pause'],
+                next: ['POST', '/me/player/next'], prev: ['POST', '/me/player/previous'] };
+  const m = map[cmd === 'toggle' ? (playback.isPlaying ? 'pause' : 'play') : cmd];
+  if (!m) return;
+  try {
+    let r = await api(m[1], { method: m[0] });
+    if (r.status === 401 && await refreshTok()) r = await api(m[1], { method: m[0] });
+    if (r.status === 403) { setMsg('Spotify Premium required'); return; }
+    if (r.status === 404) { setMsg('No active Spotify device'); return; }
+    if (cmd === 'toggle' || cmd === 'play' || cmd === 'pause') {
+      playback.isPlaying = !playback.isPlaying;
+      playback.progressMs = estProgress(); playback.fetchedAt = performance.now();
+    }
+    schedulePoll(400);
+  } catch (e) { setMsg('Playback control failed'); }
+}
+
+/* ============================== ALBUM ART ============================== */
+const art = {
+  canvas: document.createElement('canvas'),
+  tex: null, accent: new THREE.Color(0xff5fd0), have: false,
+};
+art.canvas.width = art.canvas.height = 256;
+function procArt(seed) {                       // demo / no-art fallback, deterministic
+  const c = art.canvas, g = c.getContext('2d');
+  const rnd = mulberry32(seed >>> 0);
+  const h0 = rnd() * 360;
+  const gd = g.createLinearGradient(0, 0, 0, 256);
+  gd.addColorStop(0, `hsl(${h0},85%,58%)`);
+  gd.addColorStop(1, `hsl(${(h0 + 190) % 360},80%,22%)`);
+  g.fillStyle = gd; g.fillRect(0, 0, 256, 256);
+  g.globalAlpha = 0.85;
+  for (let i = 0; i < 7; i++) {
+    const y = 40 + i * 26 + rnd() * 8;
+    g.fillStyle = `hsla(${(h0 + 60 + i * 24) % 360},95%,${60 + rnd() * 20}%,${0.25 + rnd() * 0.5})`;
+    g.fillRect(0, y, 256, 3 + rnd() * 9);
+  }
+  g.globalAlpha = 1;
+  g.strokeStyle = 'rgba(255,255,255,.55)'; g.lineWidth = 5;
+  g.strokeRect(10, 10, 236, 236);
+  g.beginPath(); g.arc(128, 118, 46 + rnd() * 14, 0, Math.PI * 2);
+  g.strokeStyle = `hsla(${(h0 + 120) % 360},100%,72%,.9)`; g.lineWidth = 7; g.stroke();
+  finishArt(false);
+}
+function finishArt(real) {
+  const g = art.canvas.getContext('2d', { willReadFrequently: true });
+  const d = g.getImageData(0, 0, 256, 256).data;
+  let best = null, bestS = -1;
+  for (let i = 0; i < d.length; i += 4 * 37) {                 // sparse scan
+    const r = d[i], gg = d[i + 1], b = d[i + 2];
+    const mx = Math.max(r, gg, b), mn = Math.min(r, gg, b);
+    const sat = mx - mn, lum = (mx + mn) / 2;
+    const score = sat * (1 - Math.abs(lum - 150) / 200);
+    if (score > bestS) { bestS = score; best = [r, gg, b]; }
+  }
+  if (best) {
+    const mx = Math.max(best[0], best[1], best[2], 1);          // renormalise: a dark cover must not kill the neon
+    art.accent.setRGB(best[0] / mx, best[1] / mx, best[2] / mx);
+  }
+  if (art.tex) art.tex.dispose();
+  art.tex = new THREE.CanvasTexture(art.canvas);
+  art.tex.minFilter = THREE.LinearFilter;
+  art.tex.magFilter = THREE.LinearFilter;
+  art.tex.generateMipmaps = false;
+  art.have = true;
+  if (matArt) matArt.uniforms.uMap.value = art.tex;
+  if (matArt) matArt.uniforms.uAccent.value.copy(art.accent);
+}
+function loadArt(url) {
+  if (!url) { procArt(hashSeed(playback.trackId || 'demo') ^ 0x9e37); return; }
+  const img = new Image();
+  img.crossOrigin = 'anonymous';                                // i.scdn.co is CORS-clean
+  img.onload = () => {
+    const g = art.canvas.getContext('2d');
+    g.clearRect(0, 0, 256, 256);
+    g.drawImage(img, 0, 0, 256, 256);
+    try { finishArt(true); } catch (e) { procArt(hashSeed(url)); }
+  };
+  img.onerror = () => procArt(hashSeed(url));
+  img.src = url;
+}
+
+/* ============================== AUDIO ============================== */
+const audio = {
+  mode: 'none', ctx: null, analyser: null, freq: null, stream: null, err: '',
+  bands: { bass: 0, mid: 0, high: 0 },
+  slowBass: 0.0001, wasAbove: false, transient: false,
+  deviceId: ls.get('mz.device') || '',
+};
+async function enableAudio(deviceId) {
+  try {
+    if (audio.stream) { audio.stream.getTracks().forEach(t => t.stop()); audio.stream = null; }
+    const cs = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (deviceId) cs.deviceId = { exact: deviceId };
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: cs });
+    audio.stream = stream; audio.err = '';
+    if (!audio.ctx) audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.ctx.state === 'suspended') await audio.ctx.resume();
+    const src = audio.ctx.createMediaStreamSource(stream);
+    audio.analyser = audio.ctx.createAnalyser();
+    audio.analyser.fftSize = 2048;
+    audio.analyser.smoothingTimeConstant = 0.35;
+    src.connect(audio.analyser);
+    audio.freq = new Uint8Array(audio.analyser.frequencyBinCount);
+    audio.mode = 'mic';
+    if (deviceId) { audio.deviceId = deviceId; ls.set('mz.device', deviceId); }
+    setMsg('Audio input live');
+  } catch (e) {
+    audio.mode = 'none'; audio.err = e.name || 'error';
+    setMsg('Audio blocked — using timeline fallback');
+  }
+}
+function sampleAudio(dtS, t) {
+  const b = audio.bands;
+  const k = 1 - Math.exp(-dtS / CONFIG.BAND_SMOOTH_S);
+  audio.transient = false;
+  if (audio.mode === 'mic' && audio.analyser) {
+    audio.analyser.getByteFrequencyData(audio.freq);
+    const n = audio.freq.length, sr = (audio.ctx && audio.ctx.sampleRate) || 48000;
+    const bin = f => clamp(Math.round(f / (sr / 2) * n), 0, n - 1);
+    const avg = (f0, f1) => {
+      const a = bin(f0), z = bin(f1); let s = 0;
+      for (let i = a; i <= z; i++) s += audio.freq[i];
+      return (s / Math.max(1, z - a + 1)) / 255;
+    };
+    const rb = avg(30, 140), rm = avg(200, 1800), rh = avg(2500, 9000);
+    b.bass += (clamp01(rb * 1.5) - b.bass) * k;
+    b.mid += (clamp01(rm * 1.7) - b.mid) * k;
+    b.high += (clamp01(rh * 2.1) - b.high) * k;
+    audio.slowBass = lerp(audio.slowBass, b.bass, 1 - Math.exp(-dtS / 0.9));
+    const above = b.bass > audio.slowBass * 1.35 + 0.04;
+    if (above && !audio.wasAbove) audio.transient = true;
+    audio.wasAbove = above;
+  } else {
+    const beat = t * 116 / 60, ph = beat % 1;
+    const env = Math.pow(1 - ph, 2.4);
+    const on = playback.isPlaying || demo.on ? 1 : 0.25;
+    b.bass += ((0.22 + 0.68 * env) * on - b.bass) * k;
+    b.mid += ((0.30 + 0.34 * Math.abs(Math.sin(t * 1.7))) * on - b.mid) * k;
+    b.high += ((0.26 + 0.40 * Math.abs(Math.sin(t * 3.1 + 1.1))) * on - b.high) * k;
+    if (ph < dtS * 116 / 60) audio.transient = true;
+  }
+}
+
+/* ============================== DEMO ============================== */
+const DEMO_TRACKS = [
+  ['NEON ARCADE', 'PIXEL DRIFT'], ['MIDNIGHT LOOP', 'CASSETTE CLUB'],
+  ['SUNSET BOULEVARD', 'TAPE HISS'], ['GHOST IN THE MIX', 'DUB SIGNAL'],
+  ['LATE TRANSFER', 'ROOM TONE'], ['CHROME HEARTS', 'VHS ROMANCE'],
+];
+const demo = { on: /[?&]demo\b/i.test(location.search), i: -1, next: 0 };
+function demoTick(now) {
+  if (!demo.on || hasTok() || now < demo.next) return;
+  demo.i = (demo.i + 1) % DEMO_TRACKS.length;
+  const t = DEMO_TRACKS[demo.i], dur = 165000 + Math.floor(Math.random() * 90000);
+  onPlayback({ is_playing: true, progress_ms: 0,
+    item: { id: 'demo-' + demo.i, name: t[0], artists: [{ name: t[1] }], duration_ms: dur, album: { images: [] } } });
+  demo.next = now + Math.min(dur, 42000);
+}
+
+/* ============================== MAZE CORE (numerically verified) ============================== */
+const CELL = CONFIG.CELL, WALL_H = CONFIG.WALL_H, WALL_T = CONFIG.WALL_T;
+const MARGIN = CONFIG.PLAYER_R + WALL_T / 2;          // 0.675, must stay < CELL/2
+const N = 0, E = 1, S = 2, W = 3;
+const DX = [0, 1, 0, -1], DZ = [-1, 0, 1, 0];
+const DIR_YAW = [0, -Math.PI / 2, Math.PI, Math.PI / 2];
+
+function hashSeed(str) {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < String(str).length; i++) { h ^= String(str).charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+  return h >>> 0;
+}
+function mulberry32(a) {
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+function hasWall(m, cx, cz, dir) {
+  if (dir === N) return m.wallN[cz * m.cols + cx] === 1;
+  if (dir === S) return m.wallN[(cz + 1) * m.cols + cx] === 1;
+  if (dir === W) return m.wallW[cz * (m.cols + 1) + cx] === 1;
+  return m.wallW[cz * (m.cols + 1) + cx + 1] === 1;
+}
+function carveWall(m, cx, cz, dir) {
+  if (dir === N) m.wallN[cz * m.cols + cx] = 0;
+  else if (dir === S) m.wallN[(cz + 1) * m.cols + cx] = 0;
+  else if (dir === W) m.wallW[cz * (m.cols + 1) + cx] = 0;
+  else m.wallW[cz * (m.cols + 1) + cx + 1] = 0;
+}
+function genMaze(cols, rows, seed) {
+  const m = {
+    cols, rows,
+    wallN: new Uint8Array((rows + 1) * cols).fill(1),
+    wallW: new Uint8Array(rows * (cols + 1)).fill(1),
+  };
+  const rnd = mulberry32(seed >>> 0);
+  const seen = new Uint8Array(cols * rows);
+  const stack = [0];
+  seen[0] = 1;
+  const order = [0, 1, 2, 3];
+  while (stack.length) {
+    const cur = stack[stack.length - 1];
+    const cx = cur % cols, cz = (cur - cx) / cols;
+    for (let i = 3; i > 0; i--) { const j = (rnd() * (i + 1)) | 0; const t = order[i]; order[i] = order[j]; order[j] = t; }
+    let moved = false;
+    for (let i = 0; i < 4; i++) {
+      const d = order[i], nx = cx + DX[d], nz = cz + DZ[d];
+      if (nx < 0 || nz < 0 || nx >= cols || nz >= rows) continue;
+      const ni = nz * cols + nx;
+      if (seen[ni]) continue;
+      carveWall(m, cx, cz, d);
+      seen[ni] = 1; stack.push(ni); moved = true; break;
+    }
+    if (!moved) stack.pop();
+  }
+  return m;
+}
+function bfs(m, sx, sz) {
+  const { cols, rows } = m;
+  const dist = new Int32Array(cols * rows).fill(-1);
+  const q = new Int32Array(cols * rows);
+  let head = 0, tail = 0;
+  dist[sz * cols + sx] = 0; q[tail++] = sz * cols + sx;
+  while (head < tail) {
+    const cur = q[head++], cx = cur % cols, cz = (cur - cx) / cols;
+    for (let d = 0; d < 4; d++) {
+      if (hasWall(m, cx, cz, d)) continue;
+      const nx = cx + DX[d], nz = cz + DZ[d];
+      if (nx < 0 || nz < 0 || nx >= cols || nz >= rows) continue;
+      const ni = nz * cols + nx;
+      if (dist[ni] !== -1) continue;
+      dist[ni] = dist[cur] + 1; q[tail++] = ni;
+    }
+  }
+  return dist;
+}
+function farthest(m, sx, sz) {
+  const d = bfs(m, sx, sz);
+  let best = 0, bi = 0;
+  for (let i = 0; i < d.length; i++) if (d[i] > best) { best = d[i]; bi = i; }
+  return { cx: bi % m.cols, cz: (bi - (bi % m.cols)) / m.cols, dist: best };
+}
+const cellOf = v => Math.floor(v / CELL);
+function resolveHit(m, x, z) {
+  const cx = clamp(cellOf(x), 0, m.cols - 1), cz = clamp(cellOf(z), 0, m.rows - 1);
+  if (hasWall(m, cx, cz, W)) x = Math.max(x, cx * CELL + MARGIN);
+  if (hasWall(m, cx, cz, E)) x = Math.min(x, (cx + 1) * CELL - MARGIN);
+  if (hasWall(m, cx, cz, N)) z = Math.max(z, cz * CELL + MARGIN);
+  if (hasWall(m, cx, cz, S)) z = Math.min(z, (cz + 1) * CELL - MARGIN);
+  return { x, z };
+}
+function moveHit(m, x, z, dx, dz) {
+  let cx = clamp(cellOf(x), 0, m.cols - 1);
+  const cz = clamp(cellOf(z), 0, m.rows - 1);
+  let nx = x + dx;
+  if (dx < 0 && hasWall(m, cx, cz, W)) nx = Math.max(nx, cx * CELL + MARGIN);
+  if (dx > 0 && hasWall(m, cx, cz, E)) nx = Math.min(nx, (cx + 1) * CELL - MARGIN);
+  x = nx;
+  cx = clamp(cellOf(x), 0, m.cols - 1);
+  let nz = z + dz;
+  if (dz < 0 && hasWall(m, cx, cz, N)) nz = Math.max(nz, cz * CELL + MARGIN);
+  if (dz > 0 && hasWall(m, cx, cz, S)) nz = Math.min(nz, (cz + 1) * CELL - MARGIN);
+  z = nz;
+  return resolveHit(m, x, z);                        // re-validate against the cell we ended in
+}
+function rhrNext(m, cx, cz, dir) {
+  const tries = [(dir + 1) & 3, dir, (dir + 3) & 3, (dir + 2) & 3];
+  for (const d of tries) {
+    if (hasWall(m, cx, cz, d)) continue;
+    const nx = cx + DX[d], nz = cz + DZ[d];
+    if (nx < 0 || nz < 0 || nx >= m.cols || nz >= m.rows) continue;
+    return { cx: nx, cz: nz, dir: d };
+  }
+  return { cx, cz, dir: (dir + 2) & 3 };
+}
+
+/* ============================== RENDERER ============================== */
+const canvas = document.getElementById('gl');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance' });
+renderer.setClearColor(0x05020c, 1);
+renderer.autoClear = false;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(74, 1, 0.05, 400);
+camera.rotation.order = 'YXZ';
+
+const FOG_HEAD = `
+  uniform float uFog; varying float vDepth;
+  vec3 applyFog(vec3 c){ float f = exp(-vDepth*vDepth*uFog*uFog); return c * clamp(f,0.0,1.0); }
+`;
+
+/* ---- sky: starfield + synth sun, pinned to the camera, drawn under everything ---- */
+const sky = new THREE.Group();
+sky.renderOrder = -10;
+scene.add(sky);
+{
+  const cnt = 1400, pos = new Float32Array(cnt * 3), ph = new Float32Array(cnt);
+  for (let i = 0; i < cnt; i++) {
+    const u = Math.random() * 2 - 1, th = Math.random() * Math.PI * 2;
+    const r = 160, s = Math.sqrt(1 - u * u);
+    pos[i * 3] = r * s * Math.cos(th);
+    pos[i * 3 + 1] = Math.abs(r * u) * 0.85 + 6;         // upper hemisphere only
+    pos[i * 3 + 2] = r * s * Math.sin(th);
+    ph[i] = Math.random() * 6.283;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aPh', new THREE.BufferAttribute(ph, 1));
+  const stars = new THREE.Points(g, new THREE.ShaderMaterial({
+    depthTest: false, depthWrite: false, transparent: false, blending: THREE.AdditiveBlending,
+    uniforms: { uT: { value: 0 }, uHi: { value: 0 } },
+    vertexShader: `attribute float aPh; uniform float uT, uHi; varying float vI;
+      void main(){
+        vec4 mv = modelViewMatrix * vec4(position,1.0);
+        gl_Position = projectionMatrix * mv;
+        vI = 0.35 + 0.65*abs(sin(uT*1.4 + aPh)) * (0.6 + 0.9*uHi);
+        gl_PointSize = 1.0 + 2.2*vI;
+      }`,
+    fragmentShader: `varying float vI;
+      void main(){
+        vec2 d = gl_PointCoord - 0.5;
+        float a = smoothstep(0.5, 0.0, length(d)) * vI;
+        gl_FragColor = vec4(mix(vec3(0.62,0.85,1.0), vec3(1.0,0.75,0.95), 0.4) * a, a);
+      }`,
+  }));
+  stars.frustumCulled = false; stars.renderOrder = -10;   // renderOrder is per-object, not inherited from the Group
+  sky.add(stars);
+
+  const sun = new THREE.Mesh(new THREE.CircleGeometry(30, 64), new THREE.ShaderMaterial({
+    depthTest: false, depthWrite: false, transparent: false, blending: THREE.AdditiveBlending,
+    uniforms: { uT: { value: 0 }, uBass: { value: 0 }, uHue: { value: 0 } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader: `
+      varying vec2 vUv; uniform float uT, uBass, uHue;
+      vec3 hshift(vec3 c, float h){
+        const vec3 k = vec3(0.57735);
+        float ch = cos(h);
+        return c*ch + cross(k,c)*sin(h) + k*dot(k,c)*(1.0-ch);
+      }
+      void main(){
+        vec2 p = vUv*2.0-1.0;
+        float r = length(p);
+        if (r > 1.0) discard;
+        vec3 top = vec3(1.0,0.86,0.35), bot = vec3(1.0,0.20,0.62);
+        vec3 c = mix(bot, top, clamp(vUv.y*1.15,0.0,1.0));
+        float y = vUv.y;
+        float band = smoothstep(0.02,0.06, abs(fract(y*13.0 - uT*0.09) - 0.5));
+        float cut = mix(1.0, band, smoothstep(0.62,0.06,y));       // slats only on the lower half
+        float edge = smoothstep(1.0,0.72,r);
+        c = hshift(c, uHue);
+        gl_FragColor = vec4(c * cut * edge * (0.75 + 0.55*uBass), edge*cut*0.92);
+      }`,
+  }));
+  sun.position.set(0, 26, -120);
+  sun.frustumCulled = false; sun.renderOrder = -9;
+  sky.add(sun);
+  sky.userData = { stars, sun };
+}
+
+/* ---- walls: one InstancedMesh, edge glow computed in-shader from world-space UV extent ---- */
+const wallGeo = new THREE.BoxGeometry(1, 1, 1);
+wallGeo.setAttribute('aGlow', new THREE.InstancedBufferAttribute(new Float32Array(MAX_INST), 1));
+wallGeo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(new Float32Array(MAX_INST), 1));
+
+const matWall = new THREE.ShaderMaterial({
+  extensions: { derivatives: true },
+  uniforms: {
+    uT: { value: 0 }, uFog: { value: CONFIG.FOG }, uBass: { value: 0 }, uMid: { value: 0 },
+    uHue: { value: 0 }, uNeon: { value: new THREE.Color(0xff5fd0) }, uCool: { value: new THREE.Color(0x7df9ff) },
+  },
+  vertexShader: `
+    attribute float aGlow; attribute float aSeed;
+    varying vec2 vUv; varying vec2 vExt; varying float vDepth; varying float vGlow; varying float vSeed;
+    varying float vUp;
+    void main(){
+      vUv = uv; vGlow = aGlow; vSeed = aSeed;
+      vec3 s = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+      vec3 an = abs(normal);
+      vExt = an.x > 0.5 ? vec2(s.z, s.y) : (an.y > 0.5 ? vec2(s.x, s.z) : vec2(s.x, s.y));
+      vUp = an.y;
+      vec4 wp = instanceMatrix * vec4(position, 1.0);
+      vec4 mv = modelViewMatrix * wp;
+      vDepth = -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: FOG_HEAD + `
+    varying vec2 vUv; varying vec2 vExt; varying float vGlow; varying float vSeed; varying float vUp;
+    uniform float uT, uBass, uMid, uHue; uniform vec3 uNeon, uCool;
+    vec3 hshift(vec3 c, float h){
+      const vec3 k = vec3(0.57735);
+      float ch = cos(h);
+      return c*ch + cross(k,c)*sin(h) + k*dot(k,c)*(1.0-ch);
+    }
+    void main(){
+      vec2 p = vUv * vExt;
+      float d = min(min(p.x, vExt.x - p.x), min(p.y, vExt.y - p.y));   // metres to nearest edge
+      float aa = max(fwidth(d), 0.0015);
+      float edge = 1.0 - smoothstep(0.0, 0.055 + aa, d);
+      float rim  = 1.0 - smoothstep(0.0, 0.30 + aa, d);
+
+      float scan = 0.5 + 0.5*sin(p.y*9.0 - uT*2.1 + vSeed*6.283);
+      scan *= smoothstep(0.34, 0.02, abs(fract(p.y*0.36 + vSeed) - 0.5));
+
+      vec3 body = mix(vec3(0.020,0.010,0.045), uCool*0.09, 0.35 + 0.65*uMid);
+      body += uNeon * scan * (0.06 + 0.34*uMid) * (1.0 - vUp);
+      body += uNeon * rim * (0.09 + 0.30*uBass);
+
+      float e = 1.6 + 3.9*uBass + 2.6*vGlow;
+      vec3 col = body + mix(uNeon, uCool, 0.35 + 0.35*sin(vSeed*7.0)) * edge * e;
+      col = hshift(col, uHue);
+      gl_FragColor = vec4(applyFog(col), 1.0);
+    }`,
+});
+const walls = new THREE.InstancedMesh(wallGeo, matWall, MAX_INST);
+walls.frustumCulled = false;
+walls.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+scene.add(walls);
+
+/* ---- album-art panels: their own instanced pass, inset into selected walls ---- */
+const artGeo = new THREE.BoxGeometry(1, 1, 1);
+const MAX_ART = 220;
+artGeo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(new Float32Array(MAX_ART), 1));
+const matArt = new THREE.ShaderMaterial({
+  uniforms: {
+    uMap: { value: null }, uT: { value: 0 }, uFog: { value: CONFIG.FOG },
+    uBass: { value: 0 }, uHigh: { value: 0 }, uHue: { value: 0 },
+    uAccent: { value: new THREE.Color(0xff5fd0) },
+  },
+  vertexShader: `
+    attribute float aSeed;
+    varying vec2 vUv; varying vec2 vExt; varying float vDepth; varying float vSeed; varying float vFace;
+    void main(){
+      vUv = uv; vSeed = aSeed;
+      vec3 s = vec3(length(instanceMatrix[0].xyz), length(instanceMatrix[1].xyz), length(instanceMatrix[2].xyz));
+      vec3 an = abs(normal);
+      vExt = an.x > 0.5 ? vec2(s.z, s.y) : (an.y > 0.5 ? vec2(s.x, s.z) : vec2(s.x, s.y));
+      vFace = max(an.x, an.z) * (1.0 - an.y);       // only the two broad faces carry art
+      vec4 mv = modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+      vDepth = -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: FOG_HEAD + `
+    varying vec2 vUv; varying vec2 vExt; varying float vSeed; varying float vFace;
+    uniform sampler2D uMap; uniform float uT, uBass, uHigh, uHue; uniform vec3 uAccent;
+    vec3 hshift(vec3 c, float h){
+      const vec3 k = vec3(0.57735); float ch = cos(h);
+      return c*ch + cross(k,c)*sin(h) + k*dot(k,c)*(1.0-ch);
+    }
+    void main(){
+      vec2 p = vUv * vExt;
+      float d = min(min(p.x, vExt.x - p.x), min(p.y, vExt.y - p.y));
+      float frame = 1.0 - smoothstep(0.0, 0.075, d);
+      vec2 uv = clamp((vUv - 0.5) * 1.24 + 0.5, 0.0, 1.0);
+      vec3 img = texture2D(uMap, vec2(uv.x, 1.0 - uv.y)).rgb;
+      float sweep = smoothstep(0.42, 0.0, abs(fract(vUv.y*0.5 - uT*0.11 + vSeed) - 0.5));
+      vec3 col = img * (0.85 + 1.25*uBass) * vFace;
+      col += uAccent * sweep * (0.10 + 0.55*uHigh) * vFace;
+      col += uAccent * frame * (2.1 + 3.4*uBass);
+      col = hshift(col, uHue);
+      gl_FragColor = vec4(applyFog(col), 1.0);
+    }`,
+});
+const artPanels = new THREE.InstancedMesh(artGeo, matArt, MAX_ART);
+artPanels.frustumCulled = false;
+scene.add(artPanels);
+
+/* ---- floor grid ---- */
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.ShaderMaterial({
+  extensions: { derivatives: true },
+  uniforms: {
+    uT: { value: 0 }, uFog: { value: CONFIG.FOG }, uMid: { value: 0 }, uBass: { value: 0 },
+    uHue: { value: 0 }, uCell: { value: CELL }, uNeon: { value: new THREE.Color(0xff5fd0) },
+    uCool: { value: new THREE.Color(0x7df9ff) },
+  },
+  vertexShader: `
+    varying vec2 vW; varying float vDepth;
+    void main(){
+      vec4 wp = modelMatrix * vec4(position,1.0);
+      vW = wp.xz;
+      vec4 mv = viewMatrix * wp;
+      vDepth = -mv.z;
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: FOG_HEAD + `
+    varying vec2 vW;
+    uniform float uT, uMid, uBass, uHue, uCell; uniform vec3 uNeon, uCool;
+    vec3 hshift(vec3 c, float h){
+      const vec3 k = vec3(0.57735); float ch = cos(h);
+      return c*ch + cross(k,c)*sin(h) + k*dot(k,c)*(1.0-ch);
+    }
+    float grid(vec2 w, float sp, float wd){
+      vec2 g = abs(fract(w/sp - 0.5) - 0.5) * sp;
+      vec2 f = fwidth(w) + 1e-5;
+      vec2 l = smoothstep(wd + f, f, g);
+      return max(l.x, l.y);
+    }
+    void main(){
+      float coarse = grid(vW, uCell, 0.030);
+      float fine   = grid(vW, uCell*0.25, 0.012);
+      // fade the fast/dense set out with distance so it stops aliasing and strobing
+      float fadeF = 1.0 - smoothstep(6.0, 22.0, vDepth);
+      float pulse = 0.55 + 0.45*sin(length(vW)*0.22 - uT*1.5);
+      vec3 col = vec3(0.010,0.006,0.030);
+      col += uCool * coarse * (0.55 + 1.85*uMid);
+      col += uNeon * fine * fadeF * (0.12 + 0.75*uMid) * pulse;
+      col += uNeon * 0.020 * (0.4 + uBass);
+      col = hshift(col, uHue);
+      gl_FragColor = vec4(applyFog(col), 1.0);
+    }`,
+}));
+floor.rotation.x = -Math.PI / 2;
+floor.frustumCulled = false;
+scene.add(floor);
+
+/* ---- exit portal: has to be genuinely bright or bloom will not catch it ---- */
+const exitGrp = new THREE.Group();
+{
+  const mat = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    uniforms: { uT: { value: 0 }, uBass: { value: 0 }, uFog: { value: CONFIG.FOG } },
+    vertexShader: `varying vec2 vUv; varying float vDepth;
+      void main(){ vUv=uv; vec4 mv = modelViewMatrix*vec4(position,1.0); vDepth=-mv.z;
+        gl_Position = projectionMatrix*mv; }`,
+    fragmentShader: FOG_HEAD + `
+      varying vec2 vUv; uniform float uT, uBass;
+      void main(){
+        float band = 0.5 + 0.5*sin(vUv.y*22.0 - uT*4.5);
+        float fade = smoothstep(1.0, 0.15, vUv.y);
+        vec3 c = mix(vec3(0.35,1.0,0.85), vec3(1.0,0.95,0.45), band*0.6);
+        float a = fade * (0.55 + 0.45*band) * (0.75 + 0.9*uBass);
+        gl_FragColor = vec4(applyFog(c*3.4*a), a);
+      }`,
+  });
+  const col = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.9, WALL_H * 1.5, 22, 1, true), mat);
+  col.position.y = WALL_H * 0.75;
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.85, 1.35, 40), mat);
+  ring.rotation.x = -Math.PI / 2;
+  ring.position.y = 0.02;
+  exitGrp.add(col); exitGrp.add(ring);
+  exitGrp.userData.mat = mat;
+}
+scene.add(exitGrp);
+
+/* ---- sparkle particles, high band ---- */
+const SPK = 900;
+const spark = (() => {
+  const pos = new Float32Array(SPK * 3), ph = new Float32Array(SPK);
+  for (let i = 0; i < SPK; i++) {
+    pos[i * 3] = Math.random(); pos[i * 3 + 1] = Math.random(); pos[i * 3 + 2] = Math.random();
+    ph[i] = Math.random() * 6.283;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aPh', new THREE.BufferAttribute(ph, 1));
+  const m = new THREE.Points(g, new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+    uniforms: {
+      uT: { value: 0 }, uHigh: { value: 0 }, uFog: { value: CONFIG.FOG }, uWallH: { value: WALL_H },
+      uOrigin: { value: new THREE.Vector3() }, uSpan: { value: 26 },
+      uAccent: { value: new THREE.Color(0x7df9ff) },
+    },
+    vertexShader: `
+      attribute float aPh; uniform float uT, uHigh, uSpan, uWallH; uniform vec3 uOrigin;
+      varying float vI; varying float vDepth;
+      void main(){
+        vec3 p = position;
+        float py = fract(p.y + uT*0.035 + aPh*0.1);
+        vec2 o = uOrigin.xz - uSpan*0.5;
+        vec2 xz = o + mod(p.xz*uSpan - o, uSpan);      // world-anchored, wraps around the player
+        vec3 w = vec3(xz.x, py*uWallH*1.15 + 0.12, xz.y);
+        vec4 mv = modelViewMatrix * vec4(w,1.0);
+        vDepth = -mv.z;
+        vI = (0.12 + 0.88*uHigh) * (0.4 + 0.6*abs(sin(uT*2.6 + aPh)));
+        gl_PointSize = (1.0 + 3.4*vI) * (14.0 / max(vDepth, 1.0));
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform float uFog; uniform vec3 uAccent; varying float vI; varying float vDepth;
+      void main(){
+        vec2 d = gl_PointCoord - 0.5;
+        float a = smoothstep(0.5, 0.0, length(d)) * vI;
+        float f = exp(-vDepth*vDepth*uFog*uFog);
+        gl_FragColor = vec4(uAccent * a * 2.6 * f, a * f);
+      }`,
+  }));
+  m.frustumCulled = false;
+  return m;
+})();
+scene.add(spark);
+
+/* ============================== BLOOM (bright-pass -> half-res separable gaussian -> add) ============================== */
+const fsScene = new THREE.Scene();
+const fsCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const fsQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), null);
+fsScene.add(fsQuad);
+const VS_FS = `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`;
+// half-float only on WebGL2, where linear filtering of it is core (WebGL1 needs an extension that may be absent)
+const RT_TYPE = renderer.capabilities.isWebGL2 ? THREE.HalfFloatType : THREE.UnsignedByteType;
+function rt(w, h, depth) {
+  return new THREE.WebGLRenderTarget(Math.max(2, w | 0), Math.max(2, h | 0), {
+    minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    format: THREE.RGBAFormat, type: RT_TYPE, depthBuffer: !!depth, stencilBuffer: false,
+  });
+}
+let rtScene = rt(2, 2, true), rtBrightA = rt(2, 2, false), rtBrightB = rt(2, 2, false);
+
+const matBright = new THREE.ShaderMaterial({
+  uniforms: { tSrc: { value: null }, uThresh: { value: 0.62 }, uKnee: { value: 0.35 } },
+  vertexShader: VS_FS,
+  fragmentShader: `
+    varying vec2 vUv; uniform sampler2D tSrc; uniform float uThresh, uKnee;
+    void main(){
+      vec3 c = texture2D(tSrc, vUv).rgb;
+      float l = dot(c, vec3(0.2126,0.7152,0.0722));
+      float s = smoothstep(uThresh, uThresh + uKnee, l);
+      gl_FragColor = vec4(c * s, 1.0);
+    }`,
+});
+const matBlur = new THREE.ShaderMaterial({
+  uniforms: { tSrc: { value: null }, uDir: { value: new THREE.Vector2(1, 0) }, uTexel: { value: new THREE.Vector2() } },
+  vertexShader: VS_FS,
+  fragmentShader: `
+    varying vec2 vUv; uniform sampler2D tSrc; uniform vec2 uDir, uTexel;
+    void main(){
+      vec2 o = uDir * uTexel;
+      vec3 s = texture2D(tSrc, vUv).rgb * 0.2270270270;
+      s += (texture2D(tSrc, vUv + o*1.3846153846).rgb + texture2D(tSrc, vUv - o*1.3846153846).rgb) * 0.3162162162;
+      s += (texture2D(tSrc, vUv + o*3.2307692308).rgb + texture2D(tSrc, vUv - o*3.2307692308).rgb) * 0.0702702703;
+      gl_FragColor = vec4(s, 1.0);
+    }`,
+});
+const matComp = new THREE.ShaderMaterial({
+  uniforms: {
+    tScene: { value: null }, tBloom: { value: null },
+    uStrength: { value: 1.0 }, uFlash: { value: 0 }, uTexel: { value: new THREE.Vector2() },
+    uAccent: { value: new THREE.Color(0xff5fd0) },
+  },
+  vertexShader: VS_FS,
+  fragmentShader: `
+    varying vec2 vUv; uniform sampler2D tScene, tBloom;
+    uniform float uStrength, uFlash; uniform vec2 uTexel; uniform vec3 uAccent;
+    void main(){
+      vec2 d = vUv - 0.5;
+      float r2 = dot(d,d);
+      vec2 ca = d * r2 * 0.020;                       // mild chromatic spread at the corners
+      vec3 c;
+      c.r = texture2D(tScene, vUv + ca).r;
+      c.g = texture2D(tScene, vUv).g;
+      c.b = texture2D(tScene, vUv - ca).b;
+      c += texture2D(tBloom, vUv).rgb * uStrength;
+      c += uAccent * uFlash * 0.85;
+
+      float l = dot(c, vec3(0.2126,0.7152,0.0722));
+      // scanlines fall off as the pixel gets bright, otherwise they band the bloom and read as a bug
+      float scan = 1.0 - 0.085 * (0.5 + 0.5*sin(vUv.y / max(uTexel.y,1e-6) * 1.5708)) * (1.0 - clamp(l*0.85,0.0,1.0));
+      c *= scan;
+      c *= 1.0 - smoothstep(0.28, 0.95, r2) * 0.55;   // vignette
+      c = c / (1.0 + c * 0.42);                        // reinhard-ish rolloff
+      c = pow(max(c, 0.0), vec3(1.0/2.2));
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+});
+function blit(mat, target) {
+  fsQuad.material = mat;
+  renderer.setRenderTarget(target || null);
+  renderer.clear(true, true, false);
+  renderer.render(fsScene, fsCam);
+}
+
+/* ============================== MAZE STATE ============================== */
+let maze = null, level = 1, exitCell = { cx: 0, cz: 0 }, explored = null;
+let flash = 0, hueShift = 0, curSeed = 0;
+const player = { x: CELL / 2, z: CELL / 2, yaw: 0, pitch: 0, bob: 0, vel: 0 };
+const auto = { on: false, cx: 0, cz: 0, dir: N, tx: 0, tz: 0, yaw: 0 };
+let lastInput = demo.on ? -1e9 : performance.now();
+
+const _m4 = new THREE.Matrix4(), _q = new THREE.Quaternion(),
+      _v = new THREE.Vector3(), _s = new THREE.Vector3();
+
+function sizeForLevel(l) {
+  return Math.min(CONFIG.SIZE_BASE + (l - 1) * CONFIG.SIZE_STEP, CONFIG.SIZE_MAX);
+}
+function rebuild(seed) {
+  curSeed = (seed >>> 0) ^ (level * 0x9e3779b9);
+  const n = sizeForLevel(level);
+  maze = genMaze(n, n, curSeed);
+  explored = new Uint8Array(n * n);
+  const f = farthest(maze, 0, 0);
+  exitCell = { cx: f.cx, cz: f.cz };
+
+  player.x = CELL / 2; player.z = CELL / 2;
+  player.yaw = hasWall(maze, 0, 0, S) ? DIR_YAW[E] : DIR_YAW[S];
+  player.pitch = 0;
+  auto.cx = 0; auto.cz = 0; auto.dir = hasWall(maze, 0, 0, S) ? E : S;
+  auto.tx = CELL / 2; auto.tz = CELL / 2; auto.yaw = player.yaw;
+
+  // walls
+  const rnd = mulberry32(curSeed ^ 0xabcdef);
+  let k = 0, artK = 0;
+  const artXf = [];
+  const push = (x, y, z, sx, sy, sz, horiz) => {
+    _v.set(x, y, z); _s.set(sx, sy, sz);
+    _m4.compose(_v, _q.identity(), _s);
+    walls.setMatrixAt(k, _m4);
+    wallGeo.attributes.aGlow.array[k] = rnd();
+    wallGeo.attributes.aSeed.array[k] = rnd();
+    if (artK < MAX_ART && k % CONFIG.ART_EVERY === 3) {
+      const iw = horiz ? CELL * 0.62 : WALL_T * 1.6;
+      const id = horiz ? WALL_T * 1.6 : CELL * 0.62;
+      artXf.push([x, WALL_H * 0.54, z, iw, WALL_H * 0.52, id]);
+      artK++;
+    }
+    k++;
+  };
+  for (let cz = 0; cz <= n; cz++)
+    for (let cx = 0; cx < n; cx++)
+      if (maze.wallN[cz * n + cx])
+        push(cx * CELL + CELL / 2, WALL_H / 2, cz * CELL, CELL + WALL_T, WALL_H, WALL_T, true);
+  for (let cz = 0; cz < n; cz++)
+    for (let cx = 0; cx <= n; cx++)
+      if (maze.wallW[cz * (n + 1) + cx])
+        push(cx * CELL, WALL_H / 2, cz * CELL + CELL / 2, WALL_T, WALL_H, CELL + WALL_T, false);
+
+  walls.count = k;
+  walls.instanceMatrix.needsUpdate = true;
+  wallGeo.attributes.aGlow.needsUpdate = true;
+  wallGeo.attributes.aSeed.needsUpdate = true;
+
+  for (let i = 0; i < artXf.length; i++) {
+    const a = artXf[i];
+    _v.set(a[0], a[1], a[2]); _s.set(a[3], a[4], a[5]);
+    _m4.compose(_v, _q.identity(), _s);
+    artPanels.setMatrixAt(i, _m4);
+    artGeo.attributes.aSeed.array[i] = rnd();
+  }
+  artPanels.count = artXf.length;
+  artPanels.instanceMatrix.needsUpdate = true;
+  artGeo.attributes.aSeed.needsUpdate = true;
+
+  const span = n * CELL;
+  floor.scale.set(span, span, 1);
+  floor.position.set(span / 2, 0, span / 2);
+  exitGrp.position.set(exitCell.cx * CELL + CELL / 2, 0, exitCell.cz * CELL + CELL / 2);
+  spark.material.uniforms.uSpan.value = 26;
+
+  document.querySelector('#lvl b').textContent = String(level);
+  markExplored();
+}
+
+function markExplored() {
+  const cx = clamp(cellOf(player.x), 0, maze.cols - 1);
+  const cz = clamp(cellOf(player.z), 0, maze.rows - 1);
+  explored[cz * maze.cols + cx] = 1;
+  for (let d = 0; d < 4; d++) {                       // line of sight down the open corridor
+    let x = cx, z = cz;
+    for (let step = 0; step < 6; step++) {
+      if (hasWall(maze, x, z, d)) break;
+      x += DX[d]; z += DZ[d];
+      if (x < 0 || z < 0 || x >= maze.cols || z >= maze.rows) break;
+      explored[z * maze.cols + x] = 1;
+    }
+  }
+}
+
+/* ============================== INPUT ============================== */
+const keys = Object.create(null);
+let locked = false;
+const elHint = document.getElementById('hint');
+
+function touchInput() {
+  lastInput = performance.now();
+  if (auto.on) { auto.on = false; setMsg('Manual control'); }
+}
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  keys[k] = true;
+  touchInput();
+  if (k === 'f') { toggleFullscreen(); e.preventDefault(); return; }
+  if (k === 'g') { enableAudio(audio.deviceId || ''); e.preventDefault(); return; }   // A is strafe-left here
+  if (k === ' ') { transport('toggle'); e.preventDefault(); return; }
+  if (k === 'arrowright') { transport('next'); e.preventDefault(); return; }
+  if (k === 'arrowleft') { transport('prev'); e.preventDefault(); return; }
+  if (k === 'm') { const mm = document.getElementById('mm'); mm.style.display = mm.style.display === 'none' ? 'block' : 'none'; return; }
+  if (k === 'd') { const d = document.getElementById('dbg'); d.style.display = d.style.display === 'block' ? 'none' : 'block'; return; }
+  if (k === 'r') { rebuild(hashSeed(playback.trackId || 'seed') ^ (Math.random() * 1e9 | 0)); flash = 0.8; setMsg('Regenerated'); return; }
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+addEventListener('mousemove', e => {
+  if (!locked) return;
+  touchInput();
+  player.yaw -= e.movementX * CONFIG.MOUSE_SENS;
+  player.pitch = clamp(player.pitch - e.movementY * CONFIG.MOUSE_SENS, -CONFIG.PITCH_MAX, CONFIG.PITCH_MAX);
+});
+canvas.addEventListener('click', () => {
+  touchInput();
+  if (!hasTok() && !demo.on) { beginAuth(); return; }
+  if (!locked) canvas.requestPointerLock();
+});
+document.addEventListener('pointerlockchange', () => {
+  locked = document.pointerLockElement === canvas;
+  elHint.style.display = locked ? 'none' : 'block';
+});
+addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+
+function fsEl() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
+function toggleFullscreen() {
+  const el = document.documentElement;
+  try {
+    if (fsEl()) { const x = document.exitFullscreen || document.webkitExitFullscreen; if (x) Promise.resolve(x.call(document)).catch(() => {}); }
+    else { const r = el.requestFullscreen || el.webkitRequestFullscreen; if (r) Promise.resolve(r.call(el)).catch(() => setMsg('Fullscreen blocked')); }
+  } catch (e) {}
+}
+
+/* ============================== SIZING ============================== */
+let VW = 1, VH = 1;
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  VW = Math.max(2, Math.round(innerWidth * dpr));
+  VH = Math.max(2, Math.round(innerHeight * dpr));
+  renderer.setPixelRatio(1);
+  renderer.setSize(VW, VH, false);
+  canvas.style.width = innerWidth + 'px';
+  canvas.style.height = innerHeight + 'px';
+  camera.aspect = VW / VH;
+  camera.updateProjectionMatrix();
+  const bw = Math.max(2, Math.round(VW * CONFIG.BLOOM_SCALE));
+  const bh = Math.max(2, Math.round(VH * CONFIG.BLOOM_SCALE));
+  rtScene.setSize(VW, VH);
+  rtBrightA.setSize(bw, bh);
+  rtBrightB.setSize(bw, bh);
+  matBlur.uniforms.uTexel.value.set(1 / bw, 1 / bh);
+  matComp.uniforms.uTexel.value.set(1 / VW, 1 / VH);
+}
+addEventListener('resize', resize);
+const onFs = () => { resize(); requestAnimationFrame(resize); };
+document.addEventListener('fullscreenchange', onFs);
+document.addEventListener('webkitfullscreenchange', onFs);
+
+/* ============================== MINIMAP ============================== */
+const mm = document.getElementById('mm'), mc = mm.getContext('2d');
+function drawMinimap() {
+  const n = maze.cols, S0 = mm.width;
+  const cell = S0 / n;
+  mc.clearRect(0, 0, S0, S0);
+  mc.fillStyle = 'rgba(10,4,22,.55)';
+  mc.fillRect(0, 0, S0, S0);
+
+  mc.beginPath();                                    // one path: shadowBlur is per draw call
+  for (let cz = 0; cz < n; cz++) for (let cx = 0; cx < n; cx++) {
+    if (!explored[cz * n + cx]) continue;
+    const x = cx * cell, y = cz * cell;
+    if (hasWall(maze, cx, cz, N)) { mc.moveTo(x, y); mc.lineTo(x + cell, y); }
+    if (hasWall(maze, cx, cz, W)) { mc.moveTo(x, y); mc.lineTo(x, y + cell); }
+    if (hasWall(maze, cx, cz, S)) { mc.moveTo(x, y + cell); mc.lineTo(x + cell, y + cell); }
+    if (hasWall(maze, cx, cz, E)) { mc.moveTo(x + cell, y); mc.lineTo(x + cell, y + cell); }
+  }
+  mc.strokeStyle = 'rgba(255,95,208,.9)';
+  mc.lineWidth = Math.max(1.4, cell * 0.09);
+  mc.shadowColor = 'rgba(255,95,208,.85)';
+  mc.shadowBlur = 8;
+  mc.stroke();
+  mc.shadowBlur = 0;
+
+  if (explored[exitCell.cz * n + exitCell.cx]) {
+    mc.fillStyle = 'rgba(110,255,210,.95)';
+    mc.shadowColor = 'rgba(110,255,210,.9)'; mc.shadowBlur = 12;
+    mc.fillRect(exitCell.cx * cell + cell * 0.3, exitCell.cz * cell + cell * 0.3, cell * 0.4, cell * 0.4);
+    mc.shadowBlur = 0;
+  }
+  const px = (player.x / (n * CELL)) * S0, py = (player.z / (n * CELL)) * S0;
+  mc.save();
+  mc.translate(px, py); mc.rotate(-player.yaw);
+  mc.beginPath(); mc.moveTo(0, -cell * 0.42); mc.lineTo(cell * 0.30, cell * 0.32); mc.lineTo(-cell * 0.30, cell * 0.32); mc.closePath();
+  mc.fillStyle = '#7df9ff'; mc.shadowColor = '#7df9ff'; mc.shadowBlur = 14; mc.fill();
+  mc.restore();
+  mc.shadowBlur = 0;
+}
+
+/* ============================== HUD ============================== */
+const elT = document.querySelector('#np .t'), elA = document.querySelector('#np .a'), elB = document.querySelector('#np .b');
+function fmt(ms) { const s = Math.max(0, Math.floor(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+function paintNowPlaying() {
+  if (playback.title) { elT.textContent = playback.title; elA.textContent = playback.artist || ''; }
+  else if (demo.on) { elT.textContent = 'Demo Mode'; elA.textContent = 'No Spotify'; }
+  else if (hasTok()) { elT.textContent = 'Nothing playing'; elA.textContent = 'Spotify idle'; }
+  else { elT.textContent = 'Neon Maze'; elA.textContent = 'Click to connect Spotify'; }
+}
+paintNowPlaying();
+
+/* ============================== FRAME ============================== */
+let last = performance.now(), fps = 60;
+function frame(now) {
+  requestAnimationFrame(frame);
+  const dtS = Math.min(0.1, Math.max(0, (now - last) / 1000));   // never negative: k would blow up to -Infinity
+  last = now;
+  const t = now / 1000;
+  fps = lerp(fps, 1 / Math.max(dtS, 1e-4), 0.06);
+
+  demoTick(now);
+  sampleAudio(dtS, t);
+  const b = audio.bands;
+
+  if (audio.transient) hueShift += (Math.random() < 0.5 ? -1 : 1) * (0.22 + 0.30 * b.bass);
+  hueShift *= Math.exp(-dtS * 2.4);
+  if (flash > 0) flash = Math.max(0, flash - dtS * 2.2);
+
+  if (!auto.on && now - lastInput > CONFIG.IDLE_MS) {
+    auto.on = true;
+    if (locked) document.exitPointerLock();
+    auto.cx = clamp(cellOf(player.x), 0, maze.cols - 1);
+    auto.cz = clamp(cellOf(player.z), 0, maze.rows - 1);
+    auto.tx = auto.cx * CELL + CELL / 2; auto.tz = auto.cz * CELL + CELL / 2;
+    auto.yaw = player.yaw;
+    setMsg('Screensaver');
+  }
+
+  /* --- movement --- */
+  if (auto.on) {
+    const dx = auto.tx - player.x, dz = auto.tz - player.z;
+    const d = Math.hypot(dx, dz);
+    const step = CONFIG.AUTO_SPEED * (0.75 + 0.5 * b.bass) * dtS;
+    if (d < Math.max(step, 0.06)) {
+      player.x = auto.tx; player.z = auto.tz;
+      const r = rhrNext(maze, auto.cx, auto.cz, auto.dir);
+      auto.cx = r.cx; auto.cz = r.cz; auto.dir = r.dir;
+      auto.tx = auto.cx * CELL + CELL / 2; auto.tz = auto.cz * CELL + CELL / 2;
+      auto.yaw = DIR_YAW[auto.dir];
+    } else {
+      player.x += dx / d * step; player.z += dz / d * step;
+    }
+    player.yaw = angLerp(player.yaw, auto.yaw, 1 - Math.exp(-dtS * 5.0));
+    player.pitch = lerp(player.pitch, Math.sin(t * 0.31) * 0.06, 1 - Math.exp(-dtS * 2.0));
+    player.vel = 1;
+  } else {
+    const f = (keys['w'] ? 1 : 0) - (keys['s'] ? 1 : 0);
+    const r = (keys['d'] ? 1 : 0) - (keys['a'] ? 1 : 0);
+    const sp = (keys['shift'] ? CONFIG.SPRINT : CONFIG.SPEED) * dtS;
+    let mx = 0, mz = 0;
+    if (f || r) {
+      const sy = Math.sin(player.yaw), cy = Math.cos(player.yaw);
+      mx = (-sy * f + cy * r); mz = (-cy * f - sy * r);
+      const l = Math.hypot(mx, mz) || 1;
+      mx = mx / l * sp; mz = mz / l * sp;
+    }
+    player.vel = lerp(player.vel, (f || r) ? 1 : 0, 1 - Math.exp(-dtS * 9));
+    const p = moveHit(maze, player.x, player.z, mx, mz);
+    player.x = p.x; player.z = p.z;
+  }
+  player.bob += dtS * player.vel * (keys['shift'] ? 13 : 9);
+  markExplored();
+
+  /* --- exit reached --- */
+  const pcx = clamp(cellOf(player.x), 0, maze.cols - 1);
+  const pcz = clamp(cellOf(player.z), 0, maze.rows - 1);
+  if (pcx === exitCell.cx && pcz === exitCell.cz) {
+    level++;
+    rebuild(hashSeed((playback.trackId || 'seed') + ':' + level));
+    flash = 1.0;
+    setMsg('Level ' + level + ' — ' + maze.cols + '\u00d7' + maze.rows);
+  }
+
+  /* --- camera --- */
+  const bobY = Math.sin(player.bob) * 0.045 * player.vel + Math.sin(t * 2.2) * 0.012 * b.bass;
+  camera.position.set(player.x, CONFIG.EYE + bobY, player.z);
+  camera.rotation.set(player.pitch, player.yaw, Math.sin(player.bob * 0.5) * 0.012 * player.vel);
+  sky.position.copy(camera.position);
+
+  /* --- uniforms --- */
+  const acc = art.accent;
+  matWall.uniforms.uT.value = t;
+  matWall.uniforms.uBass.value = b.bass;
+  matWall.uniforms.uMid.value = b.mid;
+  matWall.uniforms.uHue.value = hueShift;
+  matWall.uniforms.uNeon.value.lerp(acc, 0.04);
+  floor.material.uniforms.uT.value = t;
+  floor.material.uniforms.uMid.value = b.mid;
+  floor.material.uniforms.uBass.value = b.bass;
+  floor.material.uniforms.uHue.value = hueShift;
+  floor.material.uniforms.uNeon.value.lerp(acc, 0.04);
+  matArt.uniforms.uT.value = t;
+  matArt.uniforms.uBass.value = b.bass;
+  matArt.uniforms.uHigh.value = b.high;
+  matArt.uniforms.uHue.value = hueShift;
+  exitGrp.userData.mat.uniforms.uT.value = t;
+  exitGrp.userData.mat.uniforms.uBass.value = b.bass;
+  sky.userData.stars.material.uniforms.uT.value = t;
+  sky.userData.stars.material.uniforms.uHi.value = b.high;
+  sky.userData.sun.material.uniforms.uT.value = t;
+  sky.userData.sun.material.uniforms.uBass.value = b.bass;
+  sky.userData.sun.material.uniforms.uHue.value = hueShift;
+  spark.material.uniforms.uT.value = t;
+  spark.material.uniforms.uHigh.value = b.high;
+  spark.material.uniforms.uOrigin.value.set(player.x, 0, player.z);
+  spark.material.uniforms.uAccent.value.lerp(acc, 0.04);
+
+  /* --- draw: scene -> bright -> blur H -> blur V -> composite --- */
+  renderer.setRenderTarget(rtScene);
+  renderer.clear(true, true, false);
+  renderer.render(scene, camera);
+
+  matBright.uniforms.tSrc.value = rtScene.texture;
+  matBright.uniforms.uThresh.value = 0.58 - 0.16 * b.bass;
+  blit(matBright, rtBrightA);
+
+  matBlur.uniforms.tSrc.value = rtBrightA.texture;
+  matBlur.uniforms.uDir.value.set(1, 0);
+  blit(matBlur, rtBrightB);
+
+  matBlur.uniforms.tSrc.value = rtBrightB.texture;
+  matBlur.uniforms.uDir.value.set(0, 1);
+  blit(matBlur, rtBrightA);
+
+  matComp.uniforms.tScene.value = rtScene.texture;
+  matComp.uniforms.tBloom.value = rtBrightA.texture;
+  matComp.uniforms.uStrength.value = 0.75 + 1.55 * b.bass;
+  matComp.uniforms.uFlash.value = flash;
+  matComp.uniforms.uAccent.value.lerp(acc, 0.05);
+  blit(matComp, null);
+
+  drawMinimap();
+
+  if (msgUntil && now > msgUntil) { elMsg.style.opacity = '0'; msgUntil = 0; }
+  if (playback.durationMs) elB.textContent = fmt(estProgress()) + ' / ' + fmt(playback.durationMs);
+  else elB.textContent = '';
+
+  const dbg = document.getElementById('dbg');
+  if (dbg.style.display === 'block') {
+    dbg.textContent =
+      'fps    ' + fps.toFixed(0) +
+      '\nmaze   ' + maze.cols + 'x' + maze.rows + '  lvl ' + level + '  seed ' + curSeed +
+      '\ncell   ' + pcx + ',' + pcz + '   exit ' + exitCell.cx + ',' + exitCell.cz +
+      '\nwalls  ' + walls.count + '  art ' + artPanels.count +
+      '\nbands  b' + b.bass.toFixed(2) + ' m' + b.mid.toFixed(2) + ' h' + b.high.toFixed(2) +
+      '\naudio  ' + audio.mode + (audio.err ? ' (' + audio.err + ')' : '') +
+      '\nmode   ' + (auto.on ? 'auto' : locked ? 'manual/locked' : 'manual') +
+      '\ntrack  ' + (playback.trackId || '-');
+  }
+}
+
+/* ============================== SETUP PANEL ============================== */
+const setup = document.getElementById('setup');
+function openSetup() {
+  document.getElementById('ruri').textContent = CONFIG.REDIRECT_URI;
+  document.getElementById('inClient').value = ls.get('mz.cid') || '';
+  setup.style.display = 'grid';
+}
+document.getElementById('btnCancel').onclick = () => { setup.style.display = 'none'; };
+document.getElementById('btnReset').onclick = () => { clearAuth(); ls.del('mz.cid'); setMsg('Auth reset'); setup.style.display = 'none'; };
+document.getElementById('btnSave').onclick = () => {
+  const v = document.getElementById('inClient').value.trim();
+  if (v) ls.set('mz.cid', v);
+  setup.style.display = 'none';
+  beginAuth();
+};
+
+/* ============================== BOOT ============================== */
+(async function boot() {
+  resize();
+  rebuild(hashSeed('neon-maze'));
+  procArt(0x5eed);
+  await handleRedirect();
+  paintNowPlaying();
+  schedulePoll(0);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
