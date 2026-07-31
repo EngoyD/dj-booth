@@ -793,20 +793,33 @@ function drawRecord(t, b) {
   ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill();
   ctx.shadowBlur = 0;
   ctx.rotate(scene.spin);
-  ctx.strokeStyle = 'rgba(255,255,255,.10)'; ctx.lineWidth = 1;
-  for (let i = 1; i <= 6; i++) { ctx.beginPath(); ctx.arc(0, 0, r * (0.40 + i * 0.085), 0, 6.2832); ctx.stroke(); }
-  const lr = r * 0.42;                              // album art fills the label
+
+  // album art fills the whole disc
   if (art.img) {
     ctx.save();
-    ctx.beginPath(); ctx.arc(0, 0, lr, 0, 6.2832); ctx.clip();
-    ctx.drawImage(art.img, -lr, -lr, lr * 2, lr * 2);
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.clip();
+    const iw = art.img.width || 1, ih = art.img.height || 1;
+    const sc = (r * 2) / Math.min(iw, ih);          // cover the circle, keep aspect
+    const dw = iw * sc, dh = ih * sc;
+    ctx.drawImage(art.img, -dw / 2, -dh / 2, dw, dh);
     ctx.restore();
   } else {
     ctx.fillStyle = art.glow;
-    ctx.beginPath(); ctx.arc(0, 0, lr, 0, 6.2832); ctx.fill();
+    ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill();
   }
-  ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 2;
-  ctx.beginPath(); ctx.arc(0, 0, lr, 0, 6.2832); ctx.stroke();
+
+  // grooves over the art so it still reads as vinyl
+  ctx.strokeStyle = 'rgba(0,0,0,.22)'; ctx.lineWidth = 1;
+  for (let i = 1; i <= 9; i++) {
+    ctx.beginPath(); ctx.arc(0, 0, r * (0.20 + i * 0.085), 0, 6.2832); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,.07)'; ctx.lineWidth = 1;
+  for (let i = 1; i <= 9; i++) {
+    ctx.beginPath(); ctx.arc(0, 0, r * (0.20 + i * 0.085) + 1.5, 0, 6.2832); ctx.stroke();
+  }
+  // rim + spindle
+  ctx.strokeStyle = 'rgba(0,0,0,.45)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, r - 1, 0, 6.2832); ctx.stroke();
   ctx.fillStyle = '#0b0316';
   ctx.beginPath(); ctx.arc(0, 0, 5, 0, 6.2832); ctx.fill();
   ctx.restore();
