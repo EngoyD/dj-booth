@@ -17,6 +17,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#07030f">
 <title>DJ Booth</title>
 <style>
   html,body{margin:0;height:100%;background:#0a0a10;overflow:hidden;
@@ -57,7 +61,7 @@
 <script>
 /* ============================== CONFIG ============================== */
 const CONFIG = {
-  SPOTIFY_CLIENT_ID: '',                 // optional hardcode; else entered once in the UI (persisted)
+  SPOTIFY_CLIENT_ID: '21e1242fd5504931af52031eeed0fbff',   // shared default; safe to publish (PKCE, no secret)
   REDIRECT_URI: location.origin + location.pathname,
 
   POLL_MS_PLAYING: 3000,
@@ -342,6 +346,27 @@ function resize() {
 addEventListener('resize', resize);
 resize();
 
+/* ============================== WAKE LOCK ============================== */
+// tablets dim and lock on a timer regardless of what is on screen. hold a screen
+// wake lock while the page is visible, and re-acquire it after tab switches
+// (the lock is dropped automatically when the page is hidden).
+let _wake = null;
+async function acquireWake() {
+  try {
+    if (!('wakeLock' in navigator)) return;
+    if (_wake && !_wake.released) return;
+    _wake = await navigator.wakeLock.request('screen');
+    _wake.addEventListener('release', () => { _wake = null; });
+  } catch (e) { /* denied, or not a user gesture yet -- retried on next interaction */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') acquireWake();
+});
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) {
+  addEventListener(ev, acquireWake, { passive: true });
+}
+addEventListener('load', acquireWake);
+
 /* ============================== FULLSCREEN ============================== */
 function fsElement() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
 function toggleFullscreen() {
@@ -363,7 +388,7 @@ document.addEventListener('fullscreenchange', onFsChange);
 document.addEventListener('webkitfullscreenchange', onFsChange);
 
 /* ============================== SPOTIFY AUTH (PKCE) ============================== */
-function getClientId() { return (CONFIG.SPOTIFY_CLIENT_ID || ls.get('djb.cid') || '').trim(); }
+function getClientId() { return (ls.get('djb.cid') || CONFIG.SPOTIFY_CLIENT_ID || '').trim(); }
 function clearAuth() { ls.del('djb.at'); ls.del('djb.rt'); ls.del('djb.exp'); updateBar(); }
 function cleanUrl() { try { history.replaceState({}, '', location.pathname); } catch (e) {} }
 function b64url(buf) {
@@ -1704,7 +1729,7 @@ function drawDialog(qT, dtS) {
   const now = performance.now();
   let l1, l2, isTrack = false;
   if (ui.msg && now < ui.msgUntil) { l1 = ui.msg.slice(0, 24); l2 = ui.msg.slice(24, 48); }
-  else if (!hasTok()) { l1 = 'SPOTIFY NOT LINKED!'; l2 = 'CLICK TO CONNECT...'; }
+  else if (!hasTok() && !demo.on) { l1 = 'SPOTIFY NOT LINKED!'; l2 = 'CLICK TO CONNECT...'; }
   else if (!playback.trackId) { l1 = 'NOTHING PLAYING...'; l2 = 'START SPOTIFY ANYWHERE'; }
   else {
     l1 = txt('\u266a ' + playback.title, 60);
@@ -1867,6 +1892,27 @@ function drawDebug() {
 
 /* ============================== UI CHROME (all in-game, GB style) ============================== */
 function hasTok() { return !!(ls.get('djb.rt') || ls.get('djb.at')); }
+
+/* ============================== DEMO MODE ============================== */
+// ?demo runs the room with invented tracks and no Spotify at all: no account,
+// no client id, no allowlist. Real playback always wins if a token exists.
+const DEMO_TRACKS = [
+  ['NEON ARCADE', 'PIXEL DRIFT'], ['MIDNIGHT LOOP', 'CASSETTE CLUB'],
+  ['SLOW SUNRISE', 'TAPE HISS'], ['GHOST IN THE MIX', 'DUB SIGNAL'],
+  ['LATE TRANSFER', 'ROOM TONE'], ['PAPER LANTERNS', 'SOFT STATIC'],
+];
+const demo = { on: /[?&]demo\b/i.test(location.search), i: -1, next: 0 };
+function demoTick(now) {
+  if (!demo.on || hasTok()) return;
+  if (now < demo.next) return;
+  demo.i = (demo.i + 1) % DEMO_TRACKS.length;
+  const t = DEMO_TRACKS[demo.i], dur = 165000 + Math.floor(Math.random() * 90000);
+  onPlayback({
+    is_playing: true, progress_ms: 0, currently_playing_type: 'track',
+    item: { id: 'demo-' + demo.i, name: t[0], artists: [{ name: t[1] }], duration_ms: dur, album: { images: [] } },
+  });
+  demo.next = now + Math.min(dur, 42000);           // swap decks every 42s at most
+}
 function setMsg(t) {                      // messages appear in the dialog box, Pokemon style
   lastMsg = t || '';
   ui.msg = txt(t || '', 50);
@@ -1981,6 +2027,7 @@ function frame(now) {
   const ka = 1 - Math.exp(-dtS / 0.4);
   for (let i = 0; i < 3; i++) accent.cur[i] += (accent.tgt[i] - accent.cur[i]) * ka;
   updateBands(dtS, now);
+  demoTick(now);
   updateDJ(dtS, now);
   updatePlatters(dtS);
   updateAgents(dtS, now);

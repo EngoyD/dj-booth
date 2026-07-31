@@ -12,6 +12,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#07030f">
 <title>Retrowave</title>
 <style>
   html,body{margin:0;height:100%;background:#07030f;overflow:hidden;
@@ -352,6 +356,27 @@ function sampleAudio(dtS, t) {
     if (ph < dtS * 116 / 60) audio.transient = true;
   }
 }
+
+/* ============================== WAKE LOCK ============================== */
+// tablets dim and lock on a timer regardless of what is on screen. hold a screen
+// wake lock while the page is visible, and re-acquire it after tab switches
+// (the lock is dropped automatically when the page is hidden).
+let _wake = null;
+async function acquireWake() {
+  try {
+    if (!('wakeLock' in navigator)) return;
+    if (_wake && !_wake.released) return;
+    _wake = await navigator.wakeLock.request('screen');
+    _wake.addEventListener('release', () => { _wake = null; });
+  } catch (e) { /* denied, or not a user gesture yet -- retried on next interaction */ }
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') acquireWake();
+});
+for (const ev of ['pointerdown', 'keydown', 'touchstart']) {
+  addEventListener(ev, acquireWake, { passive: true });
+}
+addEventListener('load', acquireWake);
 
 /* ============================== DEMO ============================== */
 const DEMO_TRACKS = [
