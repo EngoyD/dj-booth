@@ -1,0 +1,979 @@
+<!doctype html>
+<!--
+  retrowave.html — Miami-85 style synthwave scene driven by your Spotify playback.
+  Canvas 2D: gradients, neon bloom, perspective grid. No pixel art, no build step.
+
+  Run:   python3 -m http.server 5173 --bind 127.0.0.1
+  Open:  http://127.0.0.1:5173/retrowave.html
+  Demo:  add ?demo to run the whole scene with no Spotify at all.
+  Keys:  F fullscreen · Space play/pause · left/right prev/next · A audio input · D debug
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Retrowave</title>
+<style>
+  html,body{margin:0;height:100%;background:#07030f;overflow:hidden;
+    font:14px/1.4 ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif;color:#ffd9f2}
+  #stage{position:fixed;inset:0;display:grid;place-items:center}
+  canvas{display:block;max-width:100%;max-height:100%}
+  #setup{position:fixed;inset:0;display:none;place-items:center;background:rgba(7,3,15,.82);z-index:20}
+  #setup .panel{background:linear-gradient(160deg,#2a0f45,#140726);border:1px solid #ff5fd0;
+    box-shadow:0 0 40px rgba(255,95,208,.35),inset 0 0 30px rgba(120,40,180,.35);
+    border-radius:10px;padding:22px;max-width:470px;display:flex;flex-direction:column;gap:12px}
+  #setup h3{margin:0;font-size:15px;letter-spacing:3px;text-transform:uppercase;
+    color:#7df9ff;text-shadow:0 0 12px rgba(125,249,255,.8)}
+  #setup code{background:#0d0518;border:1px solid #7a3a8a;padding:6px 9px;border-radius:5px;
+    user-select:all;word-break:break-all;font-size:12px;color:#ffd9f2}
+  #setup .note{font-size:12px;color:#b98fd0;line-height:1.5}
+  input{background:#0d0518;border:1px solid #7a3a8a;border-radius:5px;padding:9px;color:#ffd9f2;font-size:13px}
+  input:focus{outline:none;border-color:#ff5fd0;box-shadow:0 0 12px rgba(255,95,208,.4)}
+  button{cursor:pointer;background:linear-gradient(180deg,#ff5fd0,#b02a8a);border:none;border-radius:5px;
+    padding:9px 15px;color:#fff;font-size:12px;letter-spacing:1.5px;text-transform:uppercase;font-weight:600}
+  button.ghost{background:transparent;border:1px solid #7a3a8a;color:#b98fd0}
+  button:hover{filter:brightness(1.15)}
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="cv"></canvas></div>
+
+<div id="setup"><div class="panel">
+  <h3>Spotify Setup</h3>
+  <div class="note">Create an app at developer.spotify.com/dashboard (Web API), then add this exact Redirect URI to it:</div>
+  <code id="ruri"></code>
+  <input id="inClient" placeholder="Spotify Client ID" spellcheck="false" autocomplete="off">
+  <div style="display:flex;gap:8px;justify-content:flex-end">
+    <button class="ghost" id="btnReset">Reset auth</button>
+    <button class="ghost" id="btnCancel">Cancel</button>
+    <button id="btnSave">Save &amp; connect</button>
+  </div>
+</div></div>
+
+<script>
+/* ============================== CONFIG ============================== */
+const CONFIG = {
+  SPOTIFY_CLIENT_ID: '21e1242fd5504931af52031eeed0fbff',   // public by design (PKCE, no secret)
+  REDIRECT_URI: location.origin + location.pathname,
+  SCOPES: 'user-read-currently-playing user-read-playback-state user-modify-playback-state',
+  POLL_MS: 3000,
+  POLL_IDLE_MS: 10000,
+  W: 1280, H: 720,                        // virtual canvas; scaled to fit the viewport
+  HORIZON: 430,
+  BAND_SMOOTH_S: 0.10,
+};
+
+/* ============================== UTILS ============================== */
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+};
+const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
+const clamp01 = v => clamp(v, 0, 1);
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a, b) => a + Math.random() * (b - a);
+function b64url(buf) {
+  return btoa(String.fromCharCode(...new Uint8Array(buf)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+/* ============================== CANVAS ============================== */
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+function resize() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const s = Math.min(innerWidth / CONFIG.W, innerHeight / CONFIG.H);
+  cv.width = Math.round(CONFIG.W * s * dpr);
+  cv.height = Math.round(CONFIG.H * s * dpr);
+  cv.style.width = Math.round(CONFIG.W * s) + 'px';
+  cv.style.height = Math.round(CONFIG.H * s) + 'px';
+  ctx.setTransform(s * dpr, 0, 0, s * dpr, 0, 0);
+}
+addEventListener('resize', resize);
+resize();
+
+/* ============================== FULLSCREEN ============================== */
+function fsEl() { return document.fullscreenElement || document.webkitFullscreenElement || null; }
+function toggleFullscreen() {
+  const el = document.documentElement;
+  try {
+    if (fsEl()) { const x = document.exitFullscreen || document.webkitExitFullscreen; if (x) Promise.resolve(x.call(document)).catch(() => {}); }
+    else { const r = el.requestFullscreen || el.webkitRequestFullscreen; if (r) Promise.resolve(r.call(el)).catch(e => setMsg('Fullscreen blocked')); }
+  } catch (e) {}
+}
+const onFs = () => { resize(); requestAnimationFrame(resize); };
+document.addEventListener('fullscreenchange', onFs);
+document.addEventListener('webkitfullscreenchange', onFs);
+
+/* ============================== SPOTIFY AUTH (PKCE) ============================== */
+function getClientId() { return (ls.get('rw.cid') || CONFIG.SPOTIFY_CLIENT_ID || '').trim(); }
+function hasTok() { return !!(ls.get('rw.rt') || ls.get('rw.at')); }
+function clearAuth() { ['rw.at', 'rw.rt', 'rw.exp', 'rw.ver'].forEach(ls.del); }
+
+async function beginAuth() {
+  const cid = getClientId();
+  if (!cid) { openSetup(); return; }
+  const bytes = crypto.getRandomValues(new Uint8Array(64));
+  const verifier = b64url(bytes);
+  ls.set('rw.ver', verifier);
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(verifier));
+  const params = new URLSearchParams({
+    client_id: cid, response_type: 'code', redirect_uri: CONFIG.REDIRECT_URI,
+    code_challenge_method: 'S256', code_challenge: b64url(digest), scope: CONFIG.SCOPES,
+  });
+  location.assign('https://accounts.spotify.com/authorize?' + params);
+}
+
+async function handleRedirect() {
+  const q = new URLSearchParams(location.search);
+  const code = q.get('code'), err = q.get('error');
+  if (err) { setMsg('Spotify: ' + err); history.replaceState({}, '', CONFIG.REDIRECT_URI); return; }
+  if (!code) return;
+  const verifier = ls.get('rw.ver');
+  history.replaceState({}, '', CONFIG.REDIRECT_URI);
+  if (!verifier) return;
+  try {
+    const r = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code', code, redirect_uri: CONFIG.REDIRECT_URI,
+        client_id: getClientId(), code_verifier: verifier,
+      }),
+    });
+    const j = await r.json();
+    if (j.access_token) storeTok(j); else setMsg('Auth failed: ' + (j.error_description || j.error || '?'));
+  } catch (e) { setMsg('Auth error'); }
+  ls.del('rw.ver');
+}
+
+function storeTok(j) {
+  ls.set('rw.at', j.access_token);
+  if (j.refresh_token) ls.set('rw.rt', j.refresh_token);
+  ls.set('rw.exp', String(Date.now() + (j.expires_in || 3600) * 1000 - 60000));
+}
+
+async function refreshTok() {
+  const rt = ls.get('rw.rt');
+  if (!rt) return false;
+  try {
+    const r = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({ grant_type: 'refresh_token', refresh_token: rt, client_id: getClientId() }),
+    });
+    const j = await r.json();
+    if (j.access_token) { storeTok(j); return true; }
+  } catch (e) {}
+  return false;
+}
+
+async function tok() {
+  const exp = Number(ls.get('rw.exp') || 0);
+  if (ls.get('rw.at') && Date.now() < exp) return ls.get('rw.at');
+  if (await refreshTok()) return ls.get('rw.at');
+  return ls.get('rw.at');
+}
+
+async function api(path, opts) {
+  const t = await tok();
+  if (!t) return { status: 401 };
+  const r = await fetch('https://api.spotify.com/v1' + path, {
+    ...opts, headers: { ...(opts && opts.headers), Authorization: 'Bearer ' + t },
+  });
+  return r;
+}
+
+/* ============================== PLAYBACK ============================== */
+const playback = {
+  trackId: '', title: '', artist: '', isPlaying: false,
+  progressMs: 0, durationMs: 0, fetchedAt: 0, artUrl: '',
+};
+let pollTimer = 0, backoff = 1;
+
+function estProgress() {
+  if (!playback.isPlaying) return playback.progressMs;
+  return playback.progressMs + (performance.now() - playback.fetchedAt);
+}
+
+function onPlayback(j) {
+  if (!j || !j.item) { playback.isPlaying = !!(j && j.is_playing); playback.fetchedAt = performance.now(); return; }
+  const id = j.item.id || j.item.uri;
+  const changed = id !== playback.trackId;
+  playback.trackId = id;
+  playback.title = j.item.name || '';
+  playback.artist = (j.item.artists || []).map(a => a.name).join(', ');
+  playback.isPlaying = !!j.is_playing;
+  playback.progressMs = j.progress_ms || 0;
+  playback.durationMs = j.item.duration_ms || 0;
+  playback.fetchedAt = performance.now();
+  const imgs = (j.item.album && j.item.album.images) || [];
+  const url = imgs.length ? imgs[Math.min(1, imgs.length - 1)].url : '';
+  if (changed) { scene.flash = 1; scene.beam = 1; }
+  if (changed && url !== playback.artUrl) { playback.artUrl = url; loadArt(url); }
+  if (changed && !url) { playback.artUrl = ''; art.img = null; art.rgb = null; }
+}
+
+async function poll() {
+  if (demo.on && !hasTok()) return schedulePoll(CONFIG.POLL_MS);
+  if (!hasTok()) return schedulePoll(CONFIG.POLL_IDLE_MS);
+  try {
+    const r = await api('/me/player/currently-playing?additional_types=track');
+    if (r.status === 204) { playback.isPlaying = false; backoff = 1; return schedulePoll(CONFIG.POLL_IDLE_MS); }
+    if (r.status === 401) { if (await refreshTok()) return schedulePoll(400); clearAuth(); return schedulePoll(CONFIG.POLL_IDLE_MS); }
+    if (r.status === 429) {
+      const wait = Number(r.headers.get('retry-after') || 5);
+      return schedulePoll(clamp(wait * 1000, 1000, 60000));
+    }
+    if (!r.ok) { backoff = Math.min(backoff * 2, 16); return schedulePoll(CONFIG.POLL_MS * backoff); }
+    backoff = 1;
+    onPlayback(await r.json());
+    schedulePoll(playback.isPlaying ? CONFIG.POLL_MS : CONFIG.POLL_IDLE_MS);
+  } catch (e) {
+    backoff = Math.min(backoff * 2, 16);
+    schedulePoll(CONFIG.POLL_MS * backoff);
+  }
+}
+function schedulePoll(ms) { clearTimeout(pollTimer); pollTimer = setTimeout(poll, ms); }
+
+async function transport(cmd) {
+  if (!hasTok()) { setMsg('Connect Spotify first'); return; }
+  const map = { play: ['PUT', '/me/player/play'], pause: ['PUT', '/me/player/pause'],
+                next: ['POST', '/me/player/next'], prev: ['POST', '/me/player/previous'] };
+  const m = map[cmd === 'toggle' ? (playback.isPlaying ? 'pause' : 'play') : cmd];
+  if (!m) return;
+  try {
+    let r = await api(m[1], { method: m[0] });
+    if (r.status === 401 && await refreshTok()) r = await api(m[1], { method: m[0] });
+    if (r.status === 403) { setMsg('Spotify Premium required'); return; }
+    if (r.status === 404) { setMsg('No active Spotify device'); return; }
+    if (cmd === 'toggle' || cmd === 'play' || cmd === 'pause') {
+      playback.isPlaying = !playback.isPlaying;
+      playback.progressMs = estProgress(); playback.fetchedAt = performance.now();
+    }
+    schedulePoll(400);
+  } catch (e) { setMsg('Playback control failed'); }
+}
+
+/* ============================== ALBUM ART ============================== */
+const art = { img: null, rgb: null, glow: '#ff5fd0' };
+function loadArt(url) {
+  if (!url) return;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    art.img = img;
+    try {
+      const t = document.createElement('canvas');
+      t.width = t.height = 12;
+      const tc = t.getContext('2d', { willReadFrequently: true });
+      tc.drawImage(img, 0, 0, 12, 12);
+      const d = tc.getImageData(0, 0, 12, 12).data;
+      let best = null, bestS = -1;
+      for (let i = 0; i < d.length; i += 4) {
+        const r = d[i], g = d[i + 1], b = d[i + 2];
+        const mx = Math.max(r, g, b), mn = Math.min(r, g, b);
+        const sat = mx - mn, lum = (mx + mn) / 2;
+        const score = sat * (1 - Math.abs(lum - 150) / 200);
+        if (score > bestS) { bestS = score; best = [r, g, b]; }
+      }
+      if (best) { art.rgb = best; art.glow = `rgb(${best[0]},${best[1]},${best[2]})`; }
+    } catch (e) { art.rgb = null; art.glow = '#ff5fd0'; }
+  };
+  img.onerror = () => { art.img = null; art.rgb = null; art.glow = '#ff5fd0'; };
+  img.src = url;
+}
+
+/* ============================== AUDIO ============================== */
+const audio = {
+  mode: 'none', ctx: null, analyser: null, freq: null, stream: null, err: '',
+  bands: { bass: 0, mid: 0, high: 0 },
+  slowBass: 0.0001, wasAbove: false, transient: false,
+  deviceId: ls.get('rw.device') || '', devices: [],
+};
+async function enableAudio(deviceId) {
+  try {
+    if (audio.stream) { audio.stream.getTracks().forEach(t => t.stop()); audio.stream = null; }
+    const cs = { echoCancellation: false, noiseSuppression: false, autoGainControl: false };
+    if (deviceId) cs.deviceId = { exact: deviceId };
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: cs });
+    audio.stream = stream; audio.err = '';
+    if (!audio.ctx) audio.ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audio.ctx.state === 'suspended') await audio.ctx.resume();
+    const src = audio.ctx.createMediaStreamSource(stream);
+    audio.analyser = audio.ctx.createAnalyser();
+    audio.analyser.fftSize = 2048;
+    audio.analyser.smoothingTimeConstant = 0.35;
+    src.connect(audio.analyser);
+    audio.freq = new Uint8Array(audio.analyser.frequencyBinCount);
+    audio.mode = 'mic';
+    if (deviceId) { audio.deviceId = deviceId; ls.set('rw.device', deviceId); }
+    setMsg('Audio input live');
+    listDevices();
+  } catch (e) {
+    audio.mode = 'none'; audio.err = e.name || 'error';
+    setMsg('Audio blocked — using timeline fallback');
+  }
+}
+async function listDevices() {
+  try {
+    const all = await navigator.mediaDevices.enumerateDevices();
+    audio.devices = all.filter(d => d.kind === 'audioinput');
+  } catch (e) {}
+}
+function sampleAudio(dtS, t) {
+  const b = audio.bands;
+  const k = 1 - Math.exp(-dtS / CONFIG.BAND_SMOOTH_S);
+  audio.transient = false;
+  if (audio.mode === 'mic' && audio.analyser) {
+    audio.analyser.getByteFrequencyData(audio.freq);
+    const n = audio.freq.length, sr = (audio.ctx && audio.ctx.sampleRate) || 48000;
+    const bin = f => clamp(Math.round(f / (sr / 2) * n), 0, n - 1);
+    const avg = (f0, f1) => {
+      const a = bin(f0), z = bin(f1); let s = 0;
+      for (let i = a; i <= z; i++) s += audio.freq[i];
+      return (s / Math.max(1, z - a + 1)) / 255;
+    };
+    const rb = avg(30, 140), rm = avg(200, 1800), rh = avg(2500, 9000);
+    b.bass += (clamp01(rb * 1.5) - b.bass) * k;
+    b.mid += (clamp01(rm * 1.7) - b.mid) * k;
+    b.high += (clamp01(rh * 2.1) - b.high) * k;
+    audio.slowBass = lerp(audio.slowBass, b.bass, 1 - Math.exp(-dtS / 0.9));
+    const above = b.bass > audio.slowBass * 1.35 + 0.04;
+    if (above && !audio.wasAbove) audio.transient = true;
+    audio.wasAbove = above;
+  } else {
+    // timeline fallback: a steady 116bpm pulse so the scene still breathes
+    const beat = t * 116 / 60, ph = beat % 1;
+    const env = Math.pow(1 - ph, 2.4);
+    const on = playback.isPlaying || demo.on ? 1 : 0.25;
+    b.bass += ((0.22 + 0.68 * env) * on - b.bass) * k;
+    b.mid += ((0.30 + 0.34 * Math.abs(Math.sin(t * 1.7))) * on - b.mid) * k;
+    b.high += ((0.26 + 0.40 * Math.abs(Math.sin(t * 3.1 + 1.1))) * on - b.high) * k;
+    if (ph < dtS * 116 / 60) audio.transient = true;
+  }
+}
+
+/* ============================== DEMO ============================== */
+const DEMO_TRACKS = [
+  ['NEON ARCADE', 'PIXEL DRIFT'], ['MIDNIGHT LOOP', 'CASSETTE CLUB'],
+  ['SUNSET BOULEVARD', 'TAPE HISS'], ['GHOST IN THE MIX', 'DUB SIGNAL'],
+  ['LATE TRANSFER', 'ROOM TONE'], ['CHROME HEARTS', 'VHS ROMANCE'],
+];
+const demo = { on: /[?&]demo\b/i.test(location.search), i: -1, next: 0 };
+function demoTick(now) {
+  if (!demo.on || hasTok() || now < demo.next) return;
+  demo.i = (demo.i + 1) % DEMO_TRACKS.length;
+  const t = DEMO_TRACKS[demo.i], dur = 165000 + Math.floor(Math.random() * 90000);
+  onPlayback({ is_playing: true, progress_ms: 0,
+    item: { id: 'demo-' + demo.i, name: t[0], artists: [{ name: t[1] }], duration_ms: dur, album: { images: [] } } });
+  demo.next = now + Math.min(dur, 42000);
+}
+
+/* ============================== SCENE STATE ============================== */
+const scene = {
+  gridOff: 0, flash: 0, beam: 0, spin: 0, t: 0,
+  stars: Array.from({ length: 90 }, () => ({
+    x: Math.random() * CONFIG.W, y: Math.random() * (CONFIG.HORIZON - 120),
+    r: rand(0.5, 1.7), ph: Math.random() * 6.28,
+  })),
+  palms: [
+    { x: 120, s: 1.15, flip: false }, { x: 232, s: 0.78, flip: true },
+    { x: 1160, s: 1.05, flip: true }, { x: 1052, s: 0.72, flip: false },
+  ],
+};
+let msg = '', msgUntil = 0;
+function setMsg(t) { msg = t; msgUntil = performance.now() + 3200; }
+
+/* ============================== SCENE DRAWING ============================== */
+// Synthwave highway: we're behind a car heading for the sun, palms streaming past.
+const W = CONFIG.W, H = CONFIG.H, HZ = CONFIG.HORIZON;
+
+// palms live in normalised depth: 0 = at the horizon, 1 = past the camera
+function seedPalms() {
+  const out = [];
+  for (let i = 0; i < 16; i++) {
+    out.push(newPalm(Math.random()));
+  }
+  return out;
+}
+function newPalm(z) {
+  return {
+    z,
+    side: Math.random() < 0.5 ? -1 : 1,
+    off: rand(0.55, 1.5),          // how far off the road shoulder
+    h: rand(0.78, 1.28),           // height variation
+    lean: rand(-0.16, 0.16),       // slight trunk lean
+  };
+}
+scene.palms = seedPalms();
+scene.city = (() => {
+  const out = [];
+  for (let x = -20; x < W + 20; x += rand(22, 46)) {
+    if (Math.abs(x - W / 2) < 150) continue;                 // keep the sun clear
+    out.push({ x, w: rand(14, 32), h: rand(16, 62), ph: Math.random() * 6.28,
+               seed: Math.floor(Math.random() * 97) });
+  }
+  return out;
+})();
+
+function palmProject(p) {
+  const d = Math.pow(clamp01(p.z), 2.35);            // same easing as the grid rows
+  return {
+    x: W / 2 + p.side * (30 + d * 1180 * p.off),
+    y: HZ + d * (H - HZ) * 0.72,
+    s: (0.10 + d * 2.3) * p.h,
+    a: clamp01(p.z * 5),
+    lean: p.lean,
+  };
+}
+
+function drawSky(b) {
+  const g = ctx.createLinearGradient(0, 0, 0, HZ);
+  g.addColorStop(0, '#150430'); g.addColorStop(0.42, '#3d0d5c');
+  g.addColorStop(0.72, '#a01f7a'); g.addColorStop(0.90, '#f04d6b');
+  g.addColorStop(1, '#ffb057');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, HZ);
+}
+
+function drawStars(t, hi) {
+  for (const s of scene.stars) {
+    const tw = 0.45 + 0.55 * Math.abs(Math.sin(t * 1.6 + s.ph));
+    ctx.globalAlpha = tw * (0.5 + hi * 0.5) * (1 - s.y / HZ);
+    ctx.fillStyle = '#fff2ff';
+    ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, 6.2832); ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawSun(b) {
+  const cx = W / 2, cy = HZ - 22, r = 152 + b * 12;
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, 0, W, HZ); ctx.clip();
+  ctx.shadowColor = 'rgba(255,90,150,' + (0.55 + b * 0.35) + ')';
+  ctx.shadowBlur = 90 + b * 70;
+  const g = ctx.createLinearGradient(0, cy - r, 0, cy + r);
+  g.addColorStop(0, '#fff2a8'); g.addColorStop(0.42, '#ffb057');
+  g.addColorStop(0.72, '#ff5fa8'); g.addColorStop(1, '#c02a9a');
+  ctx.fillStyle = g;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 6.2832); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.restore();
+}
+
+function ridge(seed, height, colour, baseY, jag) {
+  ctx.fillStyle = colour;
+  ctx.beginPath();
+  ctx.moveTo(0, baseY);
+  let x = 0, i = 0;
+  while (x < W + 60) {
+    const r1 = Math.sin((i + seed) * 12.9898) * 43758.5453;
+    const r2 = Math.sin((i + seed) * 78.233) * 12345.6789;
+    const f1 = r1 - Math.floor(r1), f2 = r2 - Math.floor(r2);
+    const step = 40 + f2 * jag;
+    const peak = baseY - height * (0.30 + f1 * 0.70);
+    ctx.lineTo(x + step * 0.5, peak);
+    ctx.lineTo(x + step, baseY - height * 0.10 * f2);
+    x += step; i++;
+  }
+  ctx.lineTo(W + 60, baseY); ctx.lineTo(W + 60, baseY + 40); ctx.lineTo(0, baseY + 40);
+  ctx.closePath(); ctx.fill();
+}
+
+function drawSkyline(t) {
+  // distant lit city sitting on the horizon, left and right of the sun
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, HZ - 74, W, 74); ctx.clip();
+  const blocks = scene.city;
+  for (const b2 of blocks) {
+    ctx.fillStyle = '#1d0733';
+    ctx.fillRect(b2.x, HZ - b2.h, b2.w, b2.h);
+    ctx.fillStyle = 'rgba(255,190,120,' + (0.42 + 0.14 * Math.abs(Math.sin(t * 0.35 + b2.ph))) + ')';
+    for (let wy = HZ - b2.h + 5; wy < HZ - 6; wy += 7) {
+      for (let wx = b2.x + 3; wx < b2.x + b2.w - 3; wx += 6) {
+        if (((wx * 7 + wy * 13 + b2.seed) % 11) < 4) ctx.fillRect(wx, wy, 2, 3);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function drawMountains(t) {
+  ridge(3.1, 122, '#39115a', HZ, 90);          // far range
+  drawSkyline(t);
+  ridge(11.7, 84, '#280b44', HZ, 70);          // mid range
+  ridge(27.3, 46, '#180529', HZ, 55);          // foothills
+  const g = ctx.createLinearGradient(0, HZ - 30, 0, HZ + 22);
+  g.addColorStop(0, 'rgba(255,120,190,0)');
+  g.addColorStop(0.55, 'rgba(255,150,205,.26)');
+  g.addColorStop(1, 'rgba(255,205,235,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, HZ - 30, W, 52);
+}
+
+function drawGrid(b, off) {
+  ctx.save();
+  ctx.beginPath(); ctx.rect(0, HZ - 3, W, H - HZ + 3); ctx.clip();
+  const g = ctx.createLinearGradient(0, HZ, 0, H);
+  g.addColorStop(0, 'rgba(26,4,51,0)');            // fade in, no hard seam at the skyline
+  g.addColorStop(0.12, 'rgba(26,4,51,.92)');
+  g.addColorStop(1, 'rgba(58,8,80,1)');
+  ctx.fillStyle = g; ctx.fillRect(0, HZ, W, H - HZ);
+
+  const cx = W / 2, depth = H - HZ;
+  ctx.lineWidth = 1.4;
+  ctx.strokeStyle = 'rgba(120,245,255,' + (0.45 + b * 0.4) + ')';
+  ctx.shadowColor = 'rgba(120,245,255,.85)';
+  ctx.shadowBlur = 10 + b * 16;
+  ctx.beginPath();
+  for (let i = -22; i <= 22; i++) { ctx.moveTo(cx + i * 26, HZ); ctx.lineTo(cx + i * 330, H); }
+  ctx.stroke();
+  for (let i = 0; i < 26; i++) {
+    const p = ((i + off) % 26) / 26;
+    if (p < 0.06) continue;
+    const y = HZ + Math.pow(p, 2.6) * depth;
+    // the closest rows are travelling fastest; fade them so they smear
+    ctx.globalAlpha = clamp01(Math.min((1 - p) * 4.5, (p - 0.06) * 9));
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  ctx.shadowBlur = 0;
+  // haze at the skyline so the grid emerges from it instead of snapping on
+  const hz = ctx.createLinearGradient(0, HZ - 3, 0, HZ + 52);
+  hz.addColorStop(0, 'rgba(52,12,66,.96)');
+  hz.addColorStop(0.45, 'rgba(52,12,66,.55)');
+  hz.addColorStop(1, 'rgba(52,12,66,0)');
+  ctx.fillStyle = hz; ctx.fillRect(0, HZ - 3, W, 55);
+  ctx.restore();
+}
+
+function palmShape(x, y, s, alpha, lean) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(x, y); ctx.rotate(lean || 0); ctx.scale(s, s);
+  ctx.fillStyle = '#12042a';
+  ctx.beginPath();
+  ctx.moveTo(-5, 0);
+  ctx.quadraticCurveTo(2, -70, 16, -132);
+  ctx.lineTo(24, -130);
+  ctx.quadraticCurveTo(11, -68, 5, 0);
+  ctx.closePath(); ctx.fill();
+  const tx = 20, ty = -132;
+  for (let i = 0; i < 7; i++) {
+    const a = -Math.PI * 0.92 + i * 0.42;
+    const lx = tx + Math.cos(a) * 62, ly = ty + Math.sin(a) * 40;
+    ctx.beginPath();
+    ctx.moveTo(tx, ty);
+    ctx.quadraticCurveTo((tx + lx) / 2, ly - 26, lx, ly);
+    ctx.quadraticCurveTo((tx + lx) / 2, ly - 8, tx, ty + 6);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawPalms() {
+  // far ones first so near palms overlap them correctly
+  const sorted = scene.palms.slice().sort((a, c) => a.z - c.z);
+  for (const p of sorted) {
+    const q = palmProject(p);
+    if (q.s < 0.05) continue;
+    // vertical smear + fade on the ones tearing past
+    const near = clamp01((p.z - 0.62) / 0.38);
+    if (near > 0.02) {
+      ctx.save();
+      ctx.globalAlpha = q.a * 0.30 * (1 - near);
+      palmShape(q.x, q.y + 16 * near, q.s * (1 + near * 0.10), q.lean);
+      ctx.restore();
+    }
+    palmShape(q.x, q.y, q.s, q.a * (1 - near * 0.55), q.lean);
+  }
+}
+
+function rr(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+// neon line helper: wide glowing pass, then a hot white core on top
+function neon(col, w, blur, fn) {
+  ctx.save();
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+  ctx.shadowColor = col; ctx.shadowBlur = blur;
+  ctx.strokeStyle = col; ctx.lineWidth = w; fn();
+  ctx.shadowBlur = blur * 0.5;
+  ctx.strokeStyle = 'rgba(255,245,255,.92)'; ctx.lineWidth = Math.max(0.8, w * 0.32); fn();
+  ctx.restore();
+}
+
+// one closed silhouette: sill -> shoulder -> rear deck -> roof and back down.
+// verified so the roof narrows into the shoulders and the deck is wide enough
+// for the wing struts to actually land on it.
+function bodyPath() {
+  // DeLorean DMC-12 rear: near-vertical flanks, flat roof, steep C-pillars
+  ctx.beginPath();
+  ctx.moveTo(-124, 32);
+  ctx.lineTo(-122, -8);
+  ctx.lineTo(-118, -50);
+  ctx.lineTo(-112, -58);
+  ctx.lineTo(-72, -58);
+  ctx.lineTo(-62, -88);
+  ctx.lineTo(62, -88);
+  ctx.lineTo(72, -58);
+  ctx.lineTo(112, -58);
+  ctx.lineTo(118, -50);
+  ctx.lineTo(122, -8);
+  ctx.lineTo(124, 32);
+  ctx.closePath();
+}
+
+function carLines(MAG, CYN, ROSE, gl, solid) {
+  // tyres first, so the body overlaps their tops. no wheel face is ever visible
+  // from directly behind, so there are no rims and no spokes.
+  const ang = scene.wheel || 0;
+  for (const wx of [-100, 100]) {
+    ctx.save();
+    ctx.translate(wx, 8);
+    // fully covered at the sides by the sill, so only a clean rounded
+    // bottom shows below the body -- no wedge, nothing that reads as tilted
+    ctx.fillStyle = solid ? '#06020b' : 'rgba(6,2,11,.5)';
+    ctx.beginPath(); ctx.ellipse(0, 0, 24, 40, 0, 0, 6.2832); ctx.fill();
+    ctx.save();
+    ctx.beginPath(); ctx.ellipse(0, 0, 24, 40, 0, 0, 6.2832); ctx.clip();
+    ctx.fillStyle = 'rgba(150,120,190,.20)';
+    const step = 9, off = ((-ang * 15) % step + step) % step;   // up = rolling forward
+    for (let yy = -40 - step + off; yy < 40; yy += step) ctx.fillRect(-24, yy, 48, 2.6);
+    ctx.restore();
+    ctx.restore();
+  }
+
+  // contact shadow so the car sits on the road rather than hovering
+  for (const wx of [-100, 100]) {
+    const g = ctx.createRadialGradient(wx, 50, 1, wx, 50, 32);
+    g.addColorStop(0, 'rgba(0,0,0,.55)'); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.ellipse(wx, 50, 32, 8, 0, 0, 6.2832); ctx.fill();
+  }
+
+  ctx.fillStyle = solid ? '#0b0316' : 'rgba(11,3,22,.55)';   // opaque bodywork
+  bodyPath(); ctx.fill();
+  neon(MAG, 3.2, 22 * gl, () => { bodyPath(); ctx.stroke(); });
+
+  // louvred engine cover -- the DeLorean's most recognisable rear feature
+  neon(CYN, 1.6, 12 * gl, () => {
+    ctx.beginPath();
+    for (let i = 0; i < 9; i++) {
+      const p = i / 8, y = -86 + p * 26, hw = 58 + p * 10;
+      ctx.moveTo(-hw, y); ctx.lineTo(hw, y);
+    }
+    ctx.moveTo(-62, -88); ctx.lineTo(-72, -58);      // louvre frame sides
+    ctx.moveTo(62, -88); ctx.lineTo(72, -58);
+    ctx.stroke();
+  });
+
+  // lip spoiler across the deck: a low blade, not a winged strut assembly
+  ctx.fillStyle = solid ? '#0b0316' : 'rgba(11,3,22,.55)';
+  ctx.fillRect(-104, -64, 208, 7);
+  neon(MAG, 2.2, 16 * gl, () => {
+    ctx.beginPath(); ctx.rect(-104, -64, 208, 7); ctx.stroke();
+  });
+
+  neon(MAG, 1.7, 12 * gl, () => {                    // finned vents on the deck
+    ctx.beginPath();
+    for (const sx of [-92, 60]) {
+      ctx.rect(sx, -56, 32, 22);
+      for (let i = 1; i < 4; i++) { ctx.moveTo(sx + i * 8, -56); ctx.lineTo(sx + i * 8, -34); }
+    }
+    ctx.stroke();
+  });
+
+  // three-segment tail light clusters with the plate between them
+  neon(ROSE, 3.6, 26 * gl, () => {
+    ctx.beginPath();
+    ctx.rect(-104, -32, 74, 17);
+    ctx.rect(30, -32, 74, 17);
+    for (let i = 1; i < 3; i++) {
+      ctx.moveTo(-104 + i * 24.6, -32); ctx.lineTo(-104 + i * 24.6, -15);
+      ctx.moveTo(30 + i * 24.6, -32); ctx.lineTo(30 + i * 24.6, -15);
+    }
+    ctx.stroke();
+  });
+
+  neon(CYN, 1.6, 12 * gl, () => {                    // OUTATIME plate + lower vents
+    ctx.beginPath();
+    ctx.rect(-26, -30, 52, 14);
+    ctx.moveTo(-118, 4); ctx.lineTo(118, 4);
+    for (let i = -2; i <= 2; i++) { ctx.moveTo(i * 22, 12); ctx.lineTo(i * 22, 26); }
+    ctx.stroke();
+  });
+  ctx.save();
+  ctx.fillStyle = 'rgba(190,245,255,.92)';
+  ctx.font = '700 9px ui-monospace,SFMono-Regular,Menlo,monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = CYN; ctx.shadowBlur = 8;
+  ctx.fillText('OUTATIME', 0, -23);
+  ctx.restore();
+}
+
+function drawCar(t, b) {
+  const s = 0.62;
+  const MAG = '#ff3ce0', CYN = '#4ff0ff', ROSE = '#ff2f6b';
+  const gl = 1 + b * 0.22;                          // gentle, not a strobe
+
+  // --- motion model ---------------------------------------------------
+  // lateral wander from two incommensurate sines so it never visibly loops
+  const lat = 7 * Math.sin(t * 0.37) + 3 * Math.sin(t * 0.83);
+  const latV = 7 * 0.37 * Math.cos(t * 0.37) + 3 * 0.83 * Math.cos(t * 0.83);
+  const roll = 0;                                   // no banking; body stays level
+  // suspension travel: two rates summed, busier the faster we go
+  const jitter = clamp((scene.spd || 8) / 14, 0.5, 1.4);
+  const bob = (Math.sin(t * 3.1) * 1.1 + Math.sin(t * 5.7) * 0.6) * jitter;
+  // slight nose-up under power, easing off as the beat settles
+  const pitch = 1 - b * 0.035;
+  const cx = W / 2 + lat, cy = HZ + 62 + bob;
+
+  ctx.save();                                       // reflection tracks the body
+  ctx.translate(cx, cy + 42); ctx.rotate(-roll); ctx.scale(s, -s * 0.5 * pitch);
+  ctx.globalAlpha = 0.20;
+  carLines(MAG, CYN, ROSE, gl * 0.7, false);
+  ctx.restore();
+  const fade = ctx.createLinearGradient(0, cy + 42, 0, cy + 132);
+  fade.addColorStop(0, 'rgba(26,4,51,0)'); fade.addColorStop(1, 'rgba(26,4,51,.96)');
+  ctx.fillStyle = fade; ctx.fillRect(cx - 280, cy + 42, 560, 92);
+
+  // long-exposure light trails pouring back from the tail lamps
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  for (const side of [-1, 1]) {
+    const x0 = cx + side * 42 * s, x1 = cx + side * 108 * s;
+    const yTop = cy - 20 * s, yBot = cy + 240 * s;
+    const g = ctx.createLinearGradient(0, yTop, 0, yBot);
+    g.addColorStop(0, 'rgba(255,60,105,' + (0.42 + b * 0.22) + ')');
+    g.addColorStop(0.45, 'rgba(255,45,120,.16)');
+    g.addColorStop(1, 'rgba(255,45,120,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.moveTo(x0, yTop); ctx.lineTo(x1, yTop);
+    ctx.lineTo(x1 + side * 46, yBot); ctx.lineTo(x0 - side * 14, yBot);
+    ctx.closePath(); ctx.fill();
+  }
+  ctx.restore();
+
+  ctx.save();
+  ctx.translate(cx, cy); ctx.rotate(roll); ctx.scale(s, s * pitch);
+  const pool = ctx.createRadialGradient(0, 34, 6, 0, 34, 240);
+  pool.addColorStop(0, 'rgba(255,45,120,' + (0.34 + b * 0.24) + ')');
+  pool.addColorStop(1, 'rgba(255,45,120,0)');
+  ctx.fillStyle = pool;
+  ctx.beginPath(); ctx.ellipse(0, 34, 240, 46, 0, 0, 6.2832); ctx.fill();
+  carLines(MAG, CYN, ROSE, gl, true);
+  ctx.restore();
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(180,248,255,.68)'; ctx.lineWidth = 2.4;
+  for (let i = 0; i < 26; i++) {
+    const p = ((scene.gridOff * 2.8 + i * 0.36) % 9) / 9;
+    const yy = cy - 40 + p * 280, len = 130 + p * 620, sp = 80 + p * 520;
+    const sx = W / 2;
+    ctx.globalAlpha = (0.30 + b * 0.26) * (1 - p) * (1 - p);
+    ctx.beginPath(); ctx.moveTo(sx - sp, yy); ctx.lineTo(sx - sp - len, yy); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sx + sp, yy); ctx.lineTo(sx + sp + len, yy); ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawRecord(t, b) {
+  const cx = W - 200, cy = H - 172, r = 96;
+  ctx.save();
+  ctx.translate(cx, cy);
+  ctx.shadowColor = art.glow; ctx.shadowBlur = 30 + b * 40;
+  ctx.fillStyle = '#0b0316';
+  ctx.beginPath(); ctx.arc(0, 0, r, 0, 6.2832); ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.rotate(scene.spin);
+  ctx.strokeStyle = 'rgba(255,255,255,.10)'; ctx.lineWidth = 1;
+  for (let i = 1; i <= 6; i++) { ctx.beginPath(); ctx.arc(0, 0, r * (0.40 + i * 0.085), 0, 6.2832); ctx.stroke(); }
+  const lr = r * 0.42;                              // album art fills the label
+  if (art.img) {
+    ctx.save();
+    ctx.beginPath(); ctx.arc(0, 0, lr, 0, 6.2832); ctx.clip();
+    ctx.drawImage(art.img, -lr, -lr, lr * 2, lr * 2);
+    ctx.restore();
+  } else {
+    ctx.fillStyle = art.glow;
+    ctx.beginPath(); ctx.arc(0, 0, lr, 0, 6.2832); ctx.fill();
+  }
+  ctx.strokeStyle = 'rgba(0,0,0,.55)'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(0, 0, lr, 0, 6.2832); ctx.stroke();
+  ctx.fillStyle = '#0b0316';
+  ctx.beginPath(); ctx.arc(0, 0, 5, 0, 6.2832); ctx.fill();
+  ctx.restore();
+}
+
+function fmt(ms) { const s = Math.floor(ms / 1000); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); }
+
+const TR = [{ id: 'prev', x: -78 }, { id: 'toggle', x: 0 }, { id: 'next', x: 78 }];
+function trBounds() { return TR.map(t => ({ id: t.id, cx: W / 2 + t.x, cy: H - 40, r: 21 })); }
+
+function neonText(text, x, y, size, col, weight) {
+  ctx.font = `${weight || 700} ${size}px ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.shadowColor = col; ctx.shadowBlur = 26;
+  ctx.fillStyle = col; ctx.fillText(text, x, y);
+  ctx.shadowBlur = 12;
+  ctx.fillStyle = '#fff8ff'; ctx.fillText(text, x, y);
+  ctx.shadowBlur = 0;
+}
+
+function drawHud(t, b) {
+  const now = performance.now();
+  const linked = hasTok() || demo.on;
+  const title = msg && now < msgUntil ? msg
+    : !linked ? 'CLICK TO CONNECT SPOTIFY'
+    : playback.trackId ? playback.title : 'NOTHING PLAYING';
+  const sub = msg && now < msgUntil ? ''
+    : !linked ? 'or add ?demo to the URL'
+    : playback.trackId ? playback.artist : 'start Spotify anywhere';
+
+  neonText(title.toUpperCase(), W / 2, H - 150, 36, art.glow, 800);
+  if (sub) {
+    ctx.font = '500 20px ui-sans-serif,-apple-system,"Segoe UI",Roboto,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillStyle = 'rgba(255,200,240,.82)';
+    ctx.fillText(sub.toUpperCase(), W / 2, H - 116);
+  }
+  if (playback.durationMs > 0) {
+    const cur = clamp(estProgress(), 0, playback.durationMs);
+    const bw = 520, bx = W / 2 - bw / 2, by = H - 88;
+    ctx.fillStyle = 'rgba(255,255,255,.14)'; ctx.fillRect(bx, by, bw, 4);
+    ctx.shadowColor = art.glow; ctx.shadowBlur = 14;
+    ctx.fillStyle = art.glow;
+    ctx.fillRect(bx, by, bw * clamp01(cur / playback.durationMs), 4);
+    ctx.shadowBlur = 0;
+    ctx.font = '600 15px ui-monospace,SFMono-Regular,Menlo,monospace';
+    ctx.fillStyle = 'rgba(255,210,245,.8)';
+    ctx.textAlign = 'left'; ctx.fillText(fmt(cur), bx, by + 20);
+    ctx.textAlign = 'right'; ctx.fillText(fmt(playback.durationMs), bx + bw, by + 20);
+  }
+  for (const t2 of trBounds()) {
+    ctx.save();
+    ctx.strokeStyle = 'rgba(125,249,255,.75)'; ctx.lineWidth = 2;
+    ctx.shadowColor = '#7df9ff'; ctx.shadowBlur = 14;
+    ctx.beginPath(); ctx.arc(t2.cx, t2.cy, t2.r, 0, 6.2832); ctx.stroke();
+    ctx.shadowBlur = 0; ctx.fillStyle = '#eaf9ff'; ctx.beginPath();
+    if (t2.id === 'prev') {
+      ctx.moveTo(t2.cx + 7, t2.cy - 9); ctx.lineTo(t2.cx + 7, t2.cy + 9); ctx.lineTo(t2.cx - 5, t2.cy);
+      ctx.closePath(); ctx.fill(); ctx.fillRect(t2.cx - 9, t2.cy - 9, 3, 18);
+    } else if (t2.id === 'next') {
+      ctx.moveTo(t2.cx - 7, t2.cy - 9); ctx.lineTo(t2.cx - 7, t2.cy + 9); ctx.lineTo(t2.cx + 5, t2.cy);
+      ctx.closePath(); ctx.fill(); ctx.fillRect(t2.cx + 6, t2.cy - 9, 3, 18);
+    } else if (playback.isPlaying) {
+      ctx.fillRect(t2.cx - 7, t2.cy - 9, 5, 18); ctx.fillRect(t2.cx + 2, t2.cy - 9, 5, 18);
+    } else {
+      ctx.moveTo(t2.cx - 6, t2.cy - 9); ctx.lineTo(t2.cx - 6, t2.cy + 9); ctx.lineTo(t2.cx + 8, t2.cy);
+      ctx.closePath(); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawOverlays(b) {
+  const g = ctx.createRadialGradient(W / 2, H / 2, H * 0.28, W / 2, H / 2, H * 0.82);
+  g.addColorStop(0, 'rgba(0,0,0,0)'); g.addColorStop(1, 'rgba(0,0,0,.52)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+}
+
+function drawScene(t, b, hi) {
+  drawSky(b);
+  drawStars(t, hi);
+  drawSun(b);
+  drawMountains(t);
+  drawGrid(b, scene.gridOff);
+  drawPalms();
+  drawCar(t, b);
+  drawRecord(t, b);
+  drawHud(t, b);
+  drawOverlays(b);
+}
+
+/* ============================== MAIN LOOP ============================== */
+let last = 0;
+function frame(now) {
+  const dtS = last ? Math.min(0.05, (now - last) / 1000) : 0.016;
+  last = now;
+  const t = now / 1000;
+  scene.t = t;
+
+  demoTick(now);
+  sampleAudio(dtS, t);
+  const b = audio.bands.bass, hi = audio.bands.high;
+
+  const moving = playback.isPlaying || demo.on;
+  const speed = (34.0 + b * 14.0) * (moving ? 1 : 0.12); // flat out
+  scene.spd = speed;
+  scene.gridOff += dtS * speed;
+  scene.wheel = (scene.wheel || 0) + dtS * speed * 2.6;   // wheels turn with road speed
+  for (const p of scene.palms) {                   // palms stream past at road speed
+    p.z += dtS * speed * 0.060;
+    if (p.z > 1.06) Object.assign(p, newPalm(p.z - 1.06));   // respawn with fresh randomness
+  }
+  scene.spin += dtS * (moving ? 2.0 + b * 1.6 : 0.15);
+  if (audio.transient) scene.flash = Math.min(1, scene.flash + 0.55);
+  scene.flash *= Math.pow(0.02, dtS);
+  scene.beam *= Math.pow(0.25, dtS);
+
+  ctx.clearRect(0, 0, W, H);
+  drawScene(t, b, hi);
+
+  requestAnimationFrame(frame);
+}
+
+/* ============================== INPUT ============================== */
+function canvasPoint(e) {
+  const r = cv.getBoundingClientRect();
+  return { x: (e.clientX - r.left) / r.width * W, y: (e.clientY - r.top) / r.height * H };
+}
+cv.addEventListener('click', e => {
+  const p = canvasPoint(e);
+  for (const t of trBounds()) {
+    if (Math.hypot(p.x - t.cx, p.y - t.cy) <= t.r) { transport(t.id); return; }
+  }
+  if (!hasTok() && !demo.on) beginAuth();
+});
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'f') { toggleFullscreen(); e.preventDefault(); return; }
+  if (k === 'a') { enableAudio(audio.deviceId || ''); e.preventDefault(); return; }
+  if (k === ' ') { transport('toggle'); e.preventDefault(); return; }
+  if (k === 'arrowright') { transport('next'); e.preventDefault(); return; }
+  if (k === 'arrowleft') { transport('prev'); e.preventDefault(); return; }
+});
+
+/* ============================== SETUP PANEL ============================== */
+const setup = document.getElementById('setup');
+function openSetup() {
+  document.getElementById('ruri').textContent = CONFIG.REDIRECT_URI;
+  document.getElementById('inClient').value = ls.get('rw.cid') || '';
+  setup.style.display = 'grid';
+}
+document.getElementById('btnCancel').onclick = () => { setup.style.display = 'none'; };
+document.getElementById('btnReset').onclick = () => { clearAuth(); ls.del('rw.cid'); setMsg('Auth reset'); setup.style.display = 'none'; };
+document.getElementById('btnSave').onclick = () => {
+  const v = document.getElementById('inClient').value.trim();
+  if (v) ls.set('rw.cid', v);
+  setup.style.display = 'none';
+  beginAuth();
+};
+
+/* ============================== BOOT ============================== */
+(async function boot() {
+  await handleRedirect();
+  schedulePoll(0);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
